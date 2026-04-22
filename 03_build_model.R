@@ -46,14 +46,16 @@ top_feat <- results[order(results$performance), ]$feature
 form <- as.formula(paste(target, "~", paste(top_feat[-1], collapse = " + ")))
 
 # train model
-model <- glm(form, data = mod_train, family = binomial)
+# model <- glm(form, data = mod_train, family = binomial)
+model <- ranger(form, data = mod_train, 
+                importance = 'permutation')
 
 # generate predictions
-pred <- predict(model, newdata = mod_test,  type = "response")
+pred <- predict(model, data = mod_test,  type = "response")
 actual <- mod_test$dna_outcome
 
 # ROC curve
-roc_data <- data.frame(actual = mod_test$dna_outcome, pred = pred)
+roc_data <- data.frame(actual = mod_test$dna_outcome, pred = pred$predictions)
 roc_data <- roc_data[order(-roc_data$pred), ]
 
 tp_cum <- cumsum(roc_data$actual == 1)
@@ -65,26 +67,25 @@ total_n <- sum(roc_data$actual == 0)
 tpr <- tp_cum / total_p
 fpr <- fp_cum / total_n
 
-roc_plot <- plot(fpr, tpr, type = "l", col = "blue", lwd = 2,
-                 xlab = "False Positive Rate", ylab = "True Positive Rate",
-                 main = "Optimized ROC Curve")
-abline(0, 1, col = "gray", lty = 2)
 
+roc_plot <- ggplot(data.frame(fpr = fpr, tpr = tpr), aes(x = fpr, y = tpr)) +
+  geom_line(color = "blue", size = 1) +          
+  geom_abline(intercept = 0, slope = 1, 
+              linetype = "dashed", color = "gray") + 
+  labs(
+    title = "Optimised ROC Curve",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_minimal() +                             
+  coord_fixed();roc_plot   
+  
 auc <- sum(diff(c(0, fpr)) * (c(0, tpr[-length(tpr)]) + tpr) / 2)
 
+  
 # importance
-model_summary <- summary(model)
-coeffs <- model_summary$coefficients
-importance <- abs(coeffs[, 3])
-importance <- importance[names(importance) != "(Intercept)"]
-sorted_importance <- sort(importance, decreasing = TRUE)
-print(sorted_importance)
-
-feat_imp_plot <- barplot(sorted_importance, 
-        las = 2, 
-        col = "skyblue", 
-        main = "Feature Importance (Absolute z-score)",
-        ylab = "Absolute z-value")
+importance <- vi(model)
+feat_imp_plot <- vip(importance)
 
 list(model = model, auc = auc, roc_plot = roc_plot, feat_imp_plot = feat_imp_plot)
 

@@ -2,7 +2,7 @@ source("00_libraries.R")
 source("01_hyperparams.R")
 
 model_data <- local({
-  dataset <- read.csv("data/dna_data_full_clean.csv")
+  dataset <- read.csv("data/dna_data_24042026.csv")
   
   ds <- dataset
   

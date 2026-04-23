@@ -8,3 +8,9 @@ prop_tt <- 0.7
 n_featimp <- 5E3
 # near zero variance frequency
 nzv_freq <- 0.80
+
+
+# RF hyperparams
+
+mtry <- 10
+nodes <- 10

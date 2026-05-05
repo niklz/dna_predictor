@@ -125,7 +125,7 @@ cv_results <- fit_resamples(
   dna_workflow,
   resamples = dna_folds,
   metrics = metric_set(pr_auc, roc_auc, precision, recall),
-  control = control_resamples(save_pred = TRUE)
+  control = control_resamples(save_pred = TRUE, save_workflow = TRUE)
 )
 
 
@@ -151,7 +151,9 @@ pr_auc_cv <-  cv_results %>%
   pull(.estimate)
 
 
-bind_cols(mutate(dataset, roc_auc_cv = roc_auc_cv, pr_auc_cv = pr_auc_cv),  predict(cv_results, dataset, type = "prob"))
+fit <- fit_best(cv_results)
+
+bind_cols(mutate(dataset, roc_auc_cv = roc_auc_cv, pr_auc_cv = pr_auc_cv),  predict(fit, dataset, type = "prob"))
 
 })
 
@@ -159,25 +161,3 @@ output <- dataset
 
 
 
-final_fit %>% 
-  extract_fit_engine() %>% 
-  pluck("predictions") %>%
-  as_tibble() %>%
-  mutate(truth = train_processed$dna_outcome) %>%
-  pr_curve(truth, DNA) |>
-  ggplot(aes(x = recall, y = precision)) +
-  geom_path() +
-  coord_equal() +
-  theme_bw()
-
-final_fit %>% 
-  extract_fit_engine() %>% 
-  pluck("predictions") %>%
-  as_tibble() %>%
-  mutate(truth = train_processed$dna_outcome) %>%
-  roc_curve(truth, DNA) |>
-   ggplot(aes(x = 1 - specificity, y = sensitivity)) +
-  geom_path() +
-  geom_abline(lty = 3) +
-  coord_equal() +
-  theme_bw()

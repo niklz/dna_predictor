@@ -1,4 +1,10 @@
+dataset <- read.csv("data/dna_combined_clean.csv")
+
 library(xgboost)
+library(probably)
+library(tidymodels)
+library(embed)
+library(themis)
 
 fct_other_prp <- 0.02
 
@@ -304,6 +310,14 @@ rf_fit <- fit(final_rf_wf, data = train_raw)
 
 rf_fit %>% vip::vip()
 
+
+# Outputs
+
+rf_res <- readRDS("data/rf_res.RDS")
+xgb_res <- readRDS("data/xgb_res.RDS")
+best_rf <- select_best(rf_res, metric = "pr_auc")
+best_xgb <- select_best(xgb_res, metric = "pr_auc")
+
 rf_res %>%
   collect_metrics() %>%
   filter(.metric == "pr_auc") %>%
@@ -329,7 +343,28 @@ bind_rows(
 ) %>%
   group_by(model) %>%
   gain_curve(truth = dna_outcome, .pred_DNA) %>%
-  autoplot()
+  autoplot() +
+  paletteer::scale_color_paletteer_d("nationalparkcolors::Acadia", direction = -1) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(colour = "",
+       title = "Gain Curve for DNA model",
+  subtitle = "How quickly the models identify DNAs compared to random selection",
+  x = "Percentage of patients contacted",
+  y = "Percentage of total DNAs captured",
+  caption = "A steeper curve indicates a more effective risk stratification model.")
+
+
+ggsave("materials/gain_plot.png",
+last_plot(),
+bg = "white",
+height = 8,
+width = 7,
+scale = 0.8)
+
+
+
+
 
 bind_rows(
   rf_res %>%
@@ -370,8 +405,64 @@ rf_res %>%
   ) %>%
   arrange(desc(bin))
 
+rf_res %>%
+  collect_predictions(parameters = best_rf) %>%
+  mutate(
+    # Define your breaks based on percentiles of the predicted probabilities
+    percentile_bin = cut(
+      .pred_DNA,
+      breaks = quantile(.pred_DNA, probs = c(0, 0.5, 0.85, 0.9, 0.95, 0.99, 1), na.rm = TRUE),
+      include.lowest = TRUE,
+      labels = c("0-50%", "50-85%", "85-90%", "90-95%", "95-99%", "99-100%")
+    )
+  )%>%
+  group_by(percentile_bin) %>%
+  summarize(
+    total = n(),
+    actual_dnas = sum(dna_outcome == "DNA"),
+    actual_attended = total - actual_dnas,
+    precision = actual_dnas / total,
+    one_in_x = 1 / precision
+  ) %>%
+  # Reshape for ggplot stacking
+  tidyr::pivot_longer(cols = c(actual_dnas, actual_attended), 
+               names_to = "outcome_type", 
+               values_to = "count") %>%
+  {
+  ggplot(., aes(x = percentile_bin, y = count, fill = outcome_type)) +
+  # Use position = "fill" for proportional/percentage stacking
+  geom_col(position = "fill", alpha = 0.8) +
+  # Annotation for "1 in X" at the very top
+  geom_text(data = . %>% filter(outcome_type == "actual_dnas"),
+            aes(y = 1.05, label = paste0("1 in ", round(one_in_x, 0))),
+            size = 3.5, fontface = "bold", color = "grey20") +
+  # Labels for counts inside the bars
+  geom_text(aes(label = comma(count)), 
+            position = position_fill(vjust = 0.5), 
+            color = "white", size = 3) +
+  scale_y_continuous(labels = percent_format(), expand = expansion(mult = c(0, 0.1))) +
+  scale_fill_manual(
+    values = c("actual_attended" = "#2a679d", "actual_dnas" = "#E76F51"),
+    labels = c("Attended", "DNA (Did Not Attend)")
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Proportional DNA outcomes by risk percentile",
+    subtitle = "Labels indicate 1-in-X frequency; bar counts show raw volume",
+    x = "Predicted risk percentile (Model Score)",
+    y = "Proportion of appointments",
+    fill = "Outcome"
+  ) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "bottom")
+  }
 
-# Outputs
+ggsave("materials/risk_percentile_plot.png",
+last_plot(),
+bg = "white",
+height = 8,
+width = 7,
+scale = 0.8)
+
 
 roc_auc_cv <-  rf_res %>%
   collect_predictions(parameters = best_rf) %>%
@@ -446,6 +537,8 @@ ggplot(strata_summary, aes(x = risk_strata, y = prop, fill = dna_outcome)) +
        y = "Proportion of Patients", x = "Risk Tier")
 
 
+
+
 strata_data %>%
   group_by(risk_strata) %>%
   summarise(
@@ -455,13 +548,23 @@ strata_data %>%
   ) %>%
   ggplot(aes(x = risk_strata, y = dna_rate, fill = risk_strata)) +
   geom_col(show.legend = FALSE) +
-  geom_hline(yintercept = prop, linetype = "dashed", color = "red") + # Baseline
+  annotate("text", x = 0.5, y = prop, label = "Population Average", 
+           vjust = -1, hjust = 0, color = "grey40", fontface = "italic") +
+  geom_hline(yintercept = prop, linetype = "dashed", color = "grey40") + # Baseline
   scale_y_continuous(labels = percent_format()) +
-  paletteer::scale_fill_paletteer_d("calecopal::chaparral3", direction = -1) +
+  paletteer::scale_fill_paletteer_d("nationalparkcolors::Acadia") +
   theme_minimal() +
-  labs(title = "Actual DNA Rate by Risk Strata",
+  labs(title = "DNA Rate by Risk Strata",
+subtitle = paste0("Dashed line represents the overall average rate of ", round(prop * 100, 1), "%"),
        x = "Assigned Risk Tier",
-       y = "Actual DNA Rate (%)")
+       y = "Actual DNA rate (%)")
+
+ggsave("materials/strata_plot.png",
+last_plot(),
+bg = "white",
+height = 5,
+width = 7,
+scale = 0.8)
 
 
 # Confusion Matrix per Strata
@@ -474,3 +577,45 @@ strata_data %>%
   labs(title = "Confusion Matrix Heatmap by Risk Strata")
 
 
+
+output %>% 
+  ggplot(aes(x = .pred_DNA)) + # Map fill color to the risk value
+  geom_histogram(
+    bins = 30,                # More granular bins are usually better for probabilities
+    color = "white",          # Thin white border around bins makes them distinct
+    fill = "#9a4b53",
+    size = 0.2,               
+    position = "identity",    
+    closed = "right"          # Controls how boundary cases are handled
+  ) +
+  scale_x_continuous(
+    labels = percent_format(accuracy = 1), # Format x-axis as percentages
+    expand = c(0.01, 0),                  # Reduce empty space on the sides
+    breaks = seq(0, 1, by = 0.1)          # Force breaks at every 10%
+  ) +
+  scale_y_continuous(
+    labels = comma,                       # Add commas to high y-axis counts (e.g., 1,000)
+    expand = expansion(mult = c(0, 0.1)) # Add 10% space at the top so bars don't touch the edge
+  ) +
+  # color_palette +
+  # --- Theme & Labs ---
+  theme_minimal() + # Use a clean, minimal base theme
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(color = "grey40"),
+    panel.grid.minor = element_blank(), # Remove minor grid lines for a cleaner look
+    legend.position = "none"            # Remove the legend (x-axis already explains the colors)
+  ) +
+  labs(
+    title = "Distribution of predicted DNA probability",
+    subtitle = "Analysis of patient non-attendance risk scores",
+    x = "Predicted DNA probability ",
+    y = "Frequency (number of appointments)"
+  )
+
+ggsave("materials/risk_hist_plot.png",
+last_plot(),
+bg = "white",
+height = 5,
+width = 7,
+scale = 0.8)

@@ -6,8 +6,11 @@ library(ranger)
 library(dplyr)
 
 dataset <- local({
-nodes <- 100
-mtry <- 7
+
+# Tuned values 07/05/2026
+min_n <- 27
+mtry <- 2
+trees <- 843
 fct_other_prp <- 0.02
 
 # --- 1. Data Prep ---
@@ -104,8 +107,8 @@ dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
 # --- 3. Model Specification ---
 rf_spec <- rand_forest(
   mtry = mtry,
-  trees = 500,
-  min_n = nodes # your 'nodes' hyperparam
+  trees = trees,
+  min_n = min_n # your 'nodes' hyperparam
 ) %>%
   set_engine("ranger", importance = "permutation") %>%
   set_mode("classification")
@@ -140,13 +143,13 @@ cv_results <- fit_resamples(
 #        subtitle = "Reflects performance on imbalanced data")
 
 
-roc_auc_cv <-  cv_results %>%
-  collect_predictions() %>%
+roc_auc_cv <-  rf_res %>%
+  collect_predictions(parameters = best_rf) %>%
   roc_auc(truth = dna_outcome, .pred_DNA) %>%
   pull(.estimate)
 
-pr_auc_cv <-  cv_results %>%
-  collect_predictions() %>%
+pr_auc_cv <-  rf_res %>%
+  collect_predictions(parameters = best_rf) %>%
   pr_auc(truth = dna_outcome, .pred_DNA) %>%
   pull(.estimate)
 

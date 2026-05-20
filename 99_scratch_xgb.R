@@ -1,5 +1,10 @@
 dataset <- read.csv("data/dna_combined_clean.csv")
 
+# filter clinic which only records attendance retroactively 
+dataset <- dataset %>%
+  filter(clinic_code != "ENTO/ERS")
+
+
 library(xgboost)
 library(probably)
 library(tidymodels)
@@ -13,7 +18,8 @@ dataset <- dataset %>%
   mutate(
     dna_outcome = factor(ifelse(attended_status_code == "3", "DNA", "attended"), 
                          levels = c("DNA", "attended")),
-    imd = coalesce(as.character(index_multiple_deprivation_decile), "unknown")
+    imd = coalesce(as.character(index_multiple_deprivation_decile), "unknown"),
+    imd = factor(imd, levels = c(as.character(1:10), "unknown"))
   ) 
 
 
@@ -84,7 +90,7 @@ xgb_rec <- recipe(dna_outcome ~ ., data = train_raw) %>%
     appt_hour_cos = cos(2 * pi * appt_hour / 24),
     has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
   )%>%
-  step_rm(appt_hour, lead_time_days, appt_date, appt_month) %>%
+  step_rm(appt_hour, lead_time_days, appt_date, appt_month, prev_dna_ly) %>%
   step_novel(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors(), -imd) %>%
   # 1. Encode high-cardinality first (like you already were)
@@ -250,7 +256,7 @@ rf_rec <- recipe(dna_outcome ~ ., data = train_raw) %>%
     #   lead_time_days,
     #   num_breaks = 4,
     #   min_unique = 5) %>%
-    step_rm(appt_hour, lead_time_days, appt_date, appt_month) %>%
+    step_rm(appt_hour, lead_time_days, appt_date, appt_month, prev_dna_ly) %>%
     # Novel levels catch-all
     step_novel(all_nominal_predictors()) %>%
     # Encoding
@@ -298,7 +304,7 @@ rf_res <- tune_grid(
   control = control_grid(save_pred = TRUE, parallel_over = "everything")
 )
 
-saveRDS(rf_res, "data/rf_res.RDS")
+saveRDS(rf_res, "data/rf_res_2.RDS")
 
 
 # Select the winner and finalize
@@ -310,12 +316,11 @@ rf_fit <- fit(final_rf_wf, data = train_raw)
 
 rf_fit %>% vip::vip()
 
-
 # Outputs
 
 rf_res <- readRDS("data/rf_res.RDS")
-xgb_res <- readRDS("data/xgb_res.RDS")
 best_rf <- select_best(rf_res, metric = "pr_auc")
+xgb_res <- readRDS("data/xgb_res.RDS")
 best_xgb <- select_best(xgb_res, metric = "pr_auc")
 
 rf_res %>%
@@ -568,13 +573,13 @@ scale = 0.8)
 
 
 # Confusion Matrix per Strata
-strata_data %>%
-  group_by(risk_strata) %>%
-  conf_mat(truth = dna_outcome, estimate = custom_pred) %>%
-  mutate(plot = map(conf_mat, autoplot, type = "heatmap")) %>% pull(plot)
-  autoplot(type = "heatmap") +
-  facet_wrap(~risk_strata) +
-  labs(title = "Confusion Matrix Heatmap by Risk Strata")
+# strata_data %>%
+#   group_by(risk_strata) %>%
+#   conf_mat(truth = dna_outcome, estimate = custom_pred) %>%
+#   mutate(plot = map(conf_mat, autoplot, type = "heatmap")) %>% 
+#   autoplot(type = "heatmap") +
+#   facet_wrap(~risk_strata) +
+#   labs(title = "Confusion Matrix Heatmap by Risk Strata")
 
 
 
@@ -619,3 +624,131 @@ bg = "white",
 height = 5,
 width = 7,
 scale = 0.8)
+
+
+
+output %>% 
+  ggplot(aes(x = .pred_DNA, fill = .pred_DNA < 0.18)) + # Map fill color to the risk value
+  geom_histogram(
+    bins = 30,                # More granular bins are usually better for probabilities
+    color = "white",          # Thin white border around bins makes them distinct
+    # fill = "#9a4b53",
+    size = 0.2,               
+    position = "identity",    
+    closed = "right"          # Controls how boundary cases are handled
+  ) +
+  scale_x_continuous(
+    labels = percent_format(accuracy = 1), # Format x-axis as percentages
+    expand = c(0.01, 0),                  # Reduce empty space on the sides
+    breaks = seq(0, 1, by = 0.1)          # Force breaks at every 10%
+  ) +
+  scale_y_continuous(
+    labels = comma,                       # Add commas to high y-axis counts (e.g., 1,000)
+    expand = expansion(mult = c(0, 0.1)) # Add 10% space at the top so bars don't touch the edge
+  ) +
+  # color_palette +
+  # --- Theme & Labs ---
+  theme_minimal() + # Use a clean, minimal base theme
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(color = "grey40"),
+    panel.grid.minor = element_blank(), # Remove minor grid lines for a cleaner look
+    legend.position = "none"            # Remove the legend (x-axis already explains the colors)
+  ) +
+  labs(
+    title = "Distribution of predicted DNA probability",
+    subtitle = "Analysis of patient non-attendance risk scores",
+    x = "Predicted DNA probability ",
+    y = "Frequency (number of appointments)"
+  )
+
+
+
+
+# ENTO/ERS is driving the low-liklihood
+output %>%
+  mutate(flag = ifelse(.pred_DNA < 0.18, "low", "normal")) %>%
+  select(-c(appt_dttm, dim_patient_id)) %>%
+  gtsummary::tbl_summary(by = flag, include = c(clinic_code))
+
+
+
+
+output_2 <- rf_rec %>%
+  prep() %>%
+  bake(new_data = dataset) %>%
+  mutate(prev_dna_ly = dataset$prev_dna_ly, id = dataset$dim_patient_id) %>%
+  bind_cols(predict(rf_fit, dataset, type = "prob"))
+
+glimpse(output_2)
+
+
+output_2 %>%
+  filter(.pred_DNA > 0.18) %>%
+  mutate(
+    lead_time = expm1(lead_time_days_log),
+    liklihood_cut = factor(
+      cut(
+        .pred_DNA,
+        quantile(.pred_DNA, c(0, 0.5, .9, .99, 1)),
+        include.lowest = TRUE
+      ),
+      labels = c(
+        "Bottom 50%",
+        "50-90%",
+        "90-99%",
+        "99%+"
+      )
+    )
+  ) %>%
+  # mutate(liklihood_qtile = ntile(.pred_DNA, 10)) %>%
+  gtsummary::tbl_summary(
+    by = liklihood_cut,
+    include = c(
+      age_group,
+      has_dna_history,
+      prev_dna_ly,
+      imd,
+      appt_dow,
+      is_morning,
+      distance_km,
+      lead_over_30,
+      lead_time
+    ),
+    label = list(
+          age_group = "Age",
+          has_dna_history = "Any DNA history",
+          prev_dna_ly = "Number DNA (last year)",
+          imd = "IMD",
+          appt_dow = "Day of week",
+          is_morning = "Morning",
+          lead_over_30 = "+30 day lead-time",
+          lead_time = "Lead time",
+          distance_km = "Distance (km)"
+        )
+  )
+
+
+output_2 %>%
+  filter(.pred_DNA > 0.18) %>%
+  mutate(
+    lead_time = expm1(lead_time_days_log),
+    liklihood_cut = factor(
+      cut(
+        .pred_DNA,
+        quantile(.pred_DNA, c(0, 0.5, .9, .99, 1)),
+        include.lowest = TRUE
+      ),
+      labels = c(
+        "Bottom 50%",
+        "50-90%",
+        "90-99%",
+        "99%+"
+      )
+    )
+  ) %>%
+  distinct(id, liklihood_cut) %>%
+  group_by(group = liklihood_cut) %>%
+  sample_n(50) %>%
+  select(-liklihood_cut) %>%
+  show_in_excel()

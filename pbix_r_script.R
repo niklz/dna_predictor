@@ -7,7 +7,7 @@ library(dplyr)
 
 dataset <- local({
 
-# Tuned values 07/05/2026
+# Tuned values 21/05/2026
 min_n <- 27
 mtry <- 2
 trees <- 843
@@ -78,30 +78,37 @@ test_raw  <- dataset %>% filter(test_train != "Training") %>%
 # --- 2. The Recipe (Pre-processing Pipeline) ---
 # Tidymodels handles "knowledge separation" automatically.
 dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
-  step_mutate(
-    appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
-    appt_month_num = as.factor(format(appt_date, "%m")), 
-    lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
-    # Use pmax to floor lead_time at 0
-    lead_time_days_log = log1p(pmax(0, lead_time_days)),
-    is_morning = ifelse(appt_hour < 12, 1, 0),
-    appt_hour_sin = sin(2 * pi * appt_hour / 24),
-    appt_hour_cos = cos(2 * pi * appt_hour / 24),
-    has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
-  ) %>%
-  step_rm(appt_hour, lead_time_days, appt_date, appt_month) %>%
-  # Novel levels catch-all
-  step_novel(all_nominal_predictors()) %>%
-  # Encoding
-  step_lencode_mixed(
-    clinic_location, clinic_code, site_code, registered_gp_practice,
-    outcome = vars(dna_outcome)
-  ) %>%
-  step_impute_median(all_numeric_predictors()) %>% 
-  step_unknown(all_nominal_predictors(), -imd) %>%
-  step_nzv(all_predictors()) %>%
-  step_other(all_nominal_predictors(), threshold = fct_other_prp)  %>%
-  step_downsample(dna_outcome) 
+    step_mutate(
+      appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
+      appt_dow = factor(weekdays(appt_date)),
+      appt_month_num = as.factor(format(appt_date, "%m")),
+      lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
+      # Use pmax to floor lead_time at 0
+      lead_time_days_log = log1p(pmax(0, lead_time_days)),
+      is_morning = ifelse(appt_hour < 12, 1, 0),
+      appt_hour_sin = sin(2 * pi * appt_hour / 24),
+      appt_hour_cos = cos(2 * pi * appt_hour / 24),
+      has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
+    ) %>%
+    step_rm(appt_hour, lead_time_days, appt_date, appt_month, prev_dna_ly) %>%
+    # Novel levels catch-all
+    step_novel(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>% # Removes zero-variance predictors
+  step_nzv(all_predictors()) %>% # Removes near-zero variance predictors
+    # Encoding
+    step_lencode_mixed(
+      clinic_location,
+      clinic_code,
+      site_code,
+      registered_gp_practice,
+      outcome = vars(dna_outcome)
+    ) %>%
+    step_impute_median(all_numeric_predictors()) %>%
+    step_unknown(all_nominal_predictors(), -imd) %>%
+    step_nzv(all_predictors()) %>%
+    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+    step_downsample(dna_outcome, under_ratio = 1)
+
 
 
 # --- 3. Model Specification ---
@@ -131,30 +138,21 @@ cv_results <- fit_resamples(
   control = control_resamples(save_pred = TRUE, save_workflow = TRUE)
 )
 
-
-# cv_results %>%
-#   collect_predictions() %>%
-#   pr_curve(truth = dna_outcome, .pred_DNA) %>%
-#   ggplot(aes(x = recall, y = precision)) +
-#   geom_path(linewidth = 1) +
-#   coord_equal() +
-#   theme_bw() +
-#   labs(title = "10-Fold Cross-Validated PR Curve",
-#        subtitle = "Reflects performance on imbalanced data")
+best_rf <- select_best(cv_results, metric = "pr_auc")
 
 
-roc_auc_cv <-  rf_res %>%
+roc_auc_cv <-  cv_results %>%
   collect_predictions(parameters = best_rf) %>%
   roc_auc(truth = dna_outcome, .pred_DNA) %>%
   pull(.estimate)
 
-pr_auc_cv <-  rf_res %>%
+pr_auc_cv <-  cv_results %>%
   collect_predictions(parameters = best_rf) %>%
   pr_auc(truth = dna_outcome, .pred_DNA) %>%
   pull(.estimate)
 
 
-fit <- fit_best(cv_results)
+fit <- fit_best(cv_results, metric = "pr_auc")
 
 bind_cols(mutate(dataset, roc_auc_cv = roc_auc_cv, pr_auc_cv = pr_auc_cv),  predict(fit, dataset, type = "prob"))
 

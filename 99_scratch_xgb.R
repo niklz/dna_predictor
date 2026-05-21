@@ -94,6 +94,8 @@ xgb_rec <- recipe(dna_outcome ~ ., data = train_raw) %>%
   step_novel(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors(), -imd) %>%
   # 1. Encode high-cardinality first (like you already were)
+  step_zv(all_predictors()) %>% # Removes zero-variance predictors
+  step_nzv(all_predictors()) %>% # Removes near-zero variance predictors
   step_lencode_mixed(
     clinic_location, clinic_code, site_code, registered_gp_practice,
     outcome = vars(dna_outcome)
@@ -101,7 +103,6 @@ xgb_rec <- recipe(dna_outcome ~ ., data = train_raw) %>%
   # 2. Convert ALL remaining factors to 0/1 dummy variables (CRITICAL FOR XGBOOST)
   step_dummy(all_nominal_predictors()) %>% 
   # 3. Clean up and downsample
-  step_nzv(all_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>% 
   step_downsample(dna_outcome, under_ratio = 1)
 

@@ -4,6 +4,7 @@ library(themis)
 library(lme4)
 library(ranger)
 library(dplyr)
+library(probably)
 
 dataset <- local({
 
@@ -150,11 +151,27 @@ pr_auc_cv <-  cv_results %>%
   collect_predictions(parameters = best_rf) %>%
   pr_auc(truth = dna_outcome, .pred_DNA) %>%
   pull(.estimate)
+  
 
+# Use training fold predictions to build calibration model
+cv_preds <- cv_results %>% 
+  collect_predictions(parameters = best_rf)
 
-fit <- fit_best(cv_results, metric = "pr_auc")
+cal_model <- cal_estimate_logistic(
+  cv_preds,
+  truth = dna_outcome,
+  estimate = c(.pred_DNA, .pred_attended),
+  event_level = "first"
+)
 
-bind_cols(mutate(dataset, roc_auc_cv = roc_auc_cv, pr_auc_cv = pr_auc_cv),  predict(fit, dataset, type = "prob"))
+final_fit <- fit(dna_workflow, data = train_raw)
+
+predictions <- predict(final_fit, dataset, type = "prob")
+
+predictions_calibrated <- cal_apply(predictions, cal_model)
+predictions_rank <- percent_rank(predictions_calibrated$.pred_DNA)
+
+bind_cols(mutate(dataset, roc_auc_cv = roc_auc_cv, pr_auc_cv = pr_auc_cv),  predictions_calibrated, prediction_rank = predictions_rank)
 
 })
 

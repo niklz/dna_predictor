@@ -1,15 +1,15 @@
-dataset <- read.csv("data/dna_combined_clean.csv")
-
-# filter clinic which only records attendance retroactively 
-dataset <- dataset %>%
-  filter(clinic_code != "ENTO/ERS")
-
-
+library(tidyverse)
 library(xgboost)
 library(probably)
 library(tidymodels)
 library(embed)
 library(themis)
+
+dataset <- readr::read_csv("data/dna_combined_clean.csv")
+
+# filter clinic which only records attendance retroactively 
+dataset <- dataset %>%
+  filter(clinic_code != "ENTO/ERS")
 
 fct_other_prp <- 0.02
 

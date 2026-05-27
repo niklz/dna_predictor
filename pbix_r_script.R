@@ -85,7 +85,6 @@ dataset <- local({
       appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
       lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
-      # Use pmax to floor lead_time at 0
       lead_time_days_log = log1p(pmax(0, lead_time_days)),
       is_morning = ifelse(appt_hour < 12, 1, 0),
       appt_hour_sin = sin(2 * pi * appt_hour / 24),
@@ -93,11 +92,11 @@ dataset <- local({
       has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
     ) %>%
     step_rm(appt_hour, lead_time_days, appt_date, appt_month, prev_dna_ly) %>%
-    # Novel levels catch-all
     step_novel(all_nominal_predictors()) %>%
-    step_zv(all_predictors()) %>% # Removes zero-variance predictors
-    step_nzv(all_predictors()) %>% # Removes near-zero variance predictors
-    # Encoding
+    step_unknown(all_nominal_predictors(), -imd) %>%
+    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+    step_zv(all_predictors()) %>% 
+    step_nzv(all_predictors()) %>% 
     step_lencode_mixed(
       clinic_location,
       clinic_code,
@@ -106,9 +105,6 @@ dataset <- local({
       outcome = vars(dna_outcome)
     ) %>%
     step_impute_median(all_numeric_predictors()) %>%
-    step_unknown(all_nominal_predictors(), -imd) %>%
-    step_nzv(all_predictors()) %>%
-    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
     step_downsample(dna_outcome, under_ratio = 1)
 
   # --- 3. Model Specification ---

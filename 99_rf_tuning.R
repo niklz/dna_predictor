@@ -8,17 +8,13 @@ library(dplyr)
 library(probably)
 library(patchwork)
 
-dataset <- readr::read_csv("data/dna_combined_clean.csv")
+library(future)
+library(doFuture)
+library(tictoc)
 
-# filter clinic which only records attendance retroactively 
-dataset <- dataset %>%
-  filter(clinic_code != "ENTO/ERS")
+dataset <- readRDS("data/data_joined.RDS")
 
-
-  min_n <- 27
-  mtry <- 2
-  trees <- 843
-  fct_other_prp <- 0.02
+fct_other_prp <- 0.02
 
   # --- 1. Data Prep ---
   dataset <- dataset %>%
@@ -147,7 +143,10 @@ rf_spec <- rand_forest(
     trees = tune(),
     min_n = tune() 
   ) %>%
-    set_engine("ranger", importance = "permutation") %>%
+    set_engine("ranger",
+   num.threads = 4,
+   #num.threads = parallel::detectCores(),
+    importance = "permutation") %>%
     set_mode("classification")
 
 prepped_features <- prep(dna_recipe) %>% juice() %>% select(-dna_outcome)
@@ -156,13 +155,20 @@ rf_grid <- grid_space_filling(
   mtry() %>% finalize(prepped_features),
   min_n(),
   trees(range = c(250, 1000)),
-  size = 25 
+  size = 25
 )
 
 set.seed(123)
 dna_folds <- vfold_cv(train_raw, v = 10, strata = dna_outcome)
 
-doParallel::registerDoParallel()
+#cl <- parallel::makeCluster(parallel::detectCores() - 1, type = "PSOCK", master = "localhost")
+#doParallel::registerDoParallel(cl)
+
+registerDoFuture()
+plan(multisession, workers = 9)
+
+tic("Tidymodels grid tuning")
+
 fits <- tibble(
   id = c("down_sampling", "no_sampling"),
   recipe = list("down_sampling" = dna_recipe, "no_sampling" =dna_recipe_ns)
@@ -185,6 +191,8 @@ fits <- tibble(
       )
     })
   )
+
+toc()
 
 saveRDS(fits, "data/rf_tuning_fits.RDS")
 

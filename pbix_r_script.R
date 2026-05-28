@@ -7,10 +7,10 @@ library(dplyr)
 library(probably)
 
 dataset <- local({
-  # Tuned values 21/05/2026
-  min_n <- 27
+  # Tuned values 28/05/2026
+  min_n <- 6
   mtry <- 2
-  trees <- 843
+  trees <- 8468
   fct_other_prp <- 0.02
 
   # --- 1. Data Prep ---
@@ -104,8 +104,7 @@ dataset <- local({
       registered_gp_practice,
       outcome = vars(dna_outcome)
     ) %>%
-    step_impute_median(all_numeric_predictors()) %>%
-    step_downsample(dna_outcome, under_ratio = 1)
+    step_impute_median(all_numeric_predictors()) 
 
   # --- 3. Model Specification ---
   rf_spec <- rand_forest(

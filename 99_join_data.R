@@ -9,6 +9,15 @@ dataset <- dataset %>%
 
 dataset_kwok <- readr::read_csv("data/data_kwok.csv")
 
+
+dataset_kwok <- dataset_kwok %>%
+mutate(test_train = case_when(
+    test_train == "Testing" ~ "Training",
+    test_train == "Training" ~ "Testint",
+    TRUE ~ test_train # Keeps everything else the same
+  ))
+
+
 setdiff(names(dataset_kwok), names(dataset))
 setdiff(names(dataset), names(dataset_kwok))
 
@@ -28,6 +37,11 @@ mutate(src = "n")
 )
 
 
+
+
 saveRDS(data_joined, file = "data/data_joined.RDS")
+
+
+
 
 

@@ -196,17 +196,21 @@ toc()
 
 saveRDS(fits, "data/rf_tuning_fits.RDS")
 
-
+# best_params
 fits %>%
   mutate(best_params = map(cv_tune, \(x) select_best(x, metric = "pr_auc"))) %>% pull(best_params)
+
+
+
+fit_diag <- fits %>%
+  mutate(best_params = map(cv_tune, \(x) select_best(x, metric = "pr_auc"))) %>%
   mutate(
     predictions = map2(cv_tune, best_params, \(x, y) {
       x %>% collect_predictions(parameters = y)
     })
-  ) %>%
-  mutate(
-    cal_model = map(predictions, \(x) {
-      cal_estimate_logistic(
+  ) %>% 
+    mutate(cal_model = map(predictions, \(x) {
+  cal_estimate_logistic(
         x,
         truth = dna_outcome,
         estimate = c(.pred_DNA, .pred_attended),
@@ -214,9 +218,11 @@ fits %>%
       )
     })
   ) %>%
-  mutate(
-    predictions_cal = map2(predictions, cal_model, \(x, y) cal_apply(x, y))
-  ) %>%
+    mutate(
+  predictions_cal = map2(predictions, cal_model, \(x, y) cal_apply(x, y))
+) %>%
+  mutate(cal_plot_pre = map(predictions, \(x) cal_plot_breaks(x, truth = dna_outcome,  estimate = c(.pred_DNA, .pred_attended)))) %>% 
+  mutate(cal_plot_post = map(predictions_cal, \(x) cal_plot_breaks(x, truth = dna_outcome,  estimate = c(.pred_DNA, .pred_attended)))) %>% 
   mutate(
     pred_prob_dens = map(predictions, \(x) {
       x %>%
@@ -337,15 +343,34 @@ fits %>%
           y = "True positive rate (Sensitivity)"
         )
     })
-  ) %>%
-  select(id, pred_prob_dens, pred_prob_dens_cal, pr_curve, roc_curve) %>%
+  ) 
+
+fit_diag %>%
+  # select(id, pred_prob_dens, pred_prob_dens_cal, pr_curve, roc_curve) %>%
   mutate(ptc = pmap(list(pr_curve, roc_curve, pred_prob_dens, pred_prob_dens_cal), \(a, b, c, d) a | b | c | d)) %>%
     pull(ptc) %>%
     wrap_plots(ncol = 1)
 
 
+fit_diag %>% mutate(ptc = pmap(list(pr_curve, roc_curve), \(a, b) a | b)) %>%
+    pull(ptc) %>%
+    wrap_plots(ncol = 1) +
+  plot_layout(axes = "collect")
+  
+fit_diag %>% pull(pred_prob_dens) %>%
+      wrap_plots(ncol = 1) +
+  plot_layout(axes = "collect")
 
-  dna_workflow <- workflow() %>%
+p1 <- fit_diag %>% pull(cal_plot_pre) %>%
+  wrap_plots(ncol = 1) 
+
+p2 <- fit_diag %>% pull(cal_plot_post) %>% 
+  wrap_plots(ncol = 1) 
+
+(p1 | p2) 
+
+
+dna_workflow <- workflow() %>%
     add_recipe(dna_recipe) %>%
     add_model(rf_spec)
 

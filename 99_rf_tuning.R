@@ -100,11 +100,7 @@ fct_other_prp <- 0.02
     step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
     step_zv(all_predictors()) %>% 
     step_nzv(all_predictors()) %>% 
-    step_lencode_mixed(
-      clinic_location,
-      clinic_code,
-      site_code,
-      registered_gp_practice,
+    step_lencode_mixed(any_of(c("clinic_location", "clinic_code", "site_code", "registered_gp_practice")),
       outcome = vars(dna_outcome)
     ) %>%
     step_impute_median(all_numeric_predictors()) %>%
@@ -128,11 +124,7 @@ fct_other_prp <- 0.02
     step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
     step_zv(all_predictors()) %>% 
     step_nzv(all_predictors()) %>% 
-    step_lencode_mixed(
-      clinic_location,
-      clinic_code,
-      site_code,
-      registered_gp_practice,
+    step_lencode_mixed(any_of(c("clinic_location", "clinic_code", "site_code", "registered_gp_practice")),
       outcome = vars(dna_outcome)
     ) %>%
     step_impute_median(all_numeric_predictors()) 

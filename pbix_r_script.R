@@ -8,9 +8,9 @@ library(probably)
 
 dataset <- local({
   # Tuned values 28/05/2026
-  min_n <- 6
-  mtry <- 2
-  trees <- 8468
+  min_n <- 3
+  mtry <- 7
+  trees <- 781
   fct_other_prp <- 0.02
 
   # --- 1. Data Prep ---
@@ -112,7 +112,7 @@ dataset <- local({
     trees = trees,
     min_n = min_n # your 'nodes' hyperparam
   ) %>%
-    set_engine("ranger", importance = "permutation") %>%
+    set_engine("ranger", num.threads = 4, importance = "permutation") %>%
     set_mode("classification")
 
   set.seed(123)
@@ -156,7 +156,7 @@ dataset <- local({
     event_level = "first"
   )
 
-  final_fit <- fit(dna_workflow, data = train_raw)
+  final_fit <- fit( finalize_workflow(fits$workflow$no_sampling, parameters = best_rf) , data = train_raw)
 
   dataset %>%
     bind_cols(

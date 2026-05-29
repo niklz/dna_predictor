@@ -188,6 +188,8 @@ toc()
 
 saveRDS(fits, "data/rf_tuning_fits.RDS")
 
+fits <- readRDS("data/rf_tuning_fits.RDS")
+
 # best_params
 fits %>%
   mutate(best_params = map(cv_tune, \(x) select_best(x, metric = "pr_auc"))) %>% pull(best_params)

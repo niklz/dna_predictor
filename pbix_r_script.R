@@ -81,6 +81,7 @@ dataset <- local({
   # --- 2. The Recipe (Pre-processing Pipeline) ---
   # Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
+    update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -117,7 +118,7 @@ dataset <- local({
     set_mode("classification")
 
   set.seed(123)
-  dna_folds <- vfold_cv(train_raw, v = 10, group = dim_patient_id,  strata = dna_outcome)
+  dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id)
 
   # --- 4. The Workflow (The Container) ---
   # This binds the recipe and model so they act as a single unit

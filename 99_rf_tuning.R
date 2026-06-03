@@ -7,14 +7,13 @@ library(ranger)
 library(dplyr)
 library(probably)
 library(patchwork)
+library(GGally)
 
 library(future)
 library(doFuture)
 library(tictoc)
 
 dataset <- readRDS("data/data_joined.RDS")
-
-
 
 fct_other_prp <- 0.02
 
@@ -77,14 +76,15 @@ fct_other_prp <- 0.02
   # Separate future/unseen data based on your specific index
   train_raw <- dataset %>%
     filter(test_train == "Training") %>%
-    select(all_of(c(target_col, vars)))
+    select(all_of(c(target_col, vars, "dim_patient_id")))
   test_raw <- dataset %>%
     filter(test_train != "Training") %>%
-    select(all_of(c(target_col, vars)))
+    select(all_of(c(target_col, vars, "dim_patient_id")))
 
   # --- 2. The Recipe (Pre-processing Pipeline) ---
   # Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
+    update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -109,6 +109,7 @@ fct_other_prp <- 0.02
     step_downsample(dna_outcome, under_ratio = 1)
   
   dna_recipe_ns <- recipe(dna_outcome ~ ., data = train_raw) %>%
+    update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -153,7 +154,25 @@ rf_grid <- grid_space_filling(
 )
 
 set.seed(123)
-dna_folds <- vfold_cv(train_raw, v = 10, group = dim_patient_id, strata = dna_outcome)
+dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id)
+
+
+dna_folds %>%
+  mutate(
+    # 1. Check the Validation (Holdout) Folds
+    val_prop = map_dbl(splits, function(split) {
+      df <- assessment(split)
+      mean(df$dna_outcome == "DNA") # Adjust "missed" to your positive class label
+    }),
+    
+    # 2. Check the Training Folds
+    train_prop = map_dbl(splits, function(split) {
+      df <- analysis(split)
+      mean(df$dna_outcome == "DNA")
+    })
+  ) %>%
+  # 3. Keep only the fold ID and the calculated proportions
+  select(id, train_prop, val_prop)
 
 #cl <- parallel::makeCluster(parallel::detectCores() - 1, type = "PSOCK", master = "localhost")
 #doParallel::registerDoParallel(cl)
@@ -189,6 +208,7 @@ fits <- tibble(
 toc()
 
 saveRDS(fits, "data/rf_tuning_fits.RDS")
+saveRDS(fits, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tuning_fits.RDS")
 
 fits <- readRDS("data/rf_tuning_fits.RDS")
 
@@ -200,6 +220,45 @@ fits %>%
 
 fit_diag <- fits %>%
   mutate(best_params = map(cv_tune, \(x) select_best(x, metric = "pr_auc"))) %>%
+  mutate(param_trace = map(cv_tune, \(x)
+    x %>%
+  collect_metrics() %>%
+  filter(.metric == "pr_auc") %>% 
+  select(mean, mtry:min_n) %>%
+  pivot_longer(mtry:min_n,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "AUC")
+  )) %>% 
+  mutate(para_coord_plot = map(cv_tune, \(x)
+    x %>%
+  collect_metrics() %>%
+  filter(.metric == "pr_auc") %>%
+  select(mtry, trees, min_n, mean) %>%
+  ggparcoord(
+    columns = 1:3,           # The columns for your hyperparameters
+    groupColumn = 4,         # Color the lines by the 'mean' (PR-AUC) column
+    scale = "uniminmax",     # Scales each column 0-1 so they are visually comparable
+    showPoints = TRUE,       # Adds dots on the axes for each model
+    alphaLines = 0.7         # Makes lines slightly transparent to see overlaps
+  ) +
+  scale_color_viridis_c(option = "viridis", name = "Mean PR-AUC") +
+  theme_minimal() +
+  labs(
+    title = "Parallel Coordinates Plot of Random Forest Tuning",
+    subtitle = "Higher PR-AUC paths are highlighted in yellow/green",
+    x = "Hyperparameters",
+    y = "Normalized Scale (0 to 1)"
+  ) +
+  theme(
+    panel.grid.major.x = element_line(color = "grey80", linewidth = 0.5),
+    legend.position = "right"
+  )
+  )) %>% 
   mutate(
     predictions = map2(cv_tune, best_params, \(x, y) {
       x %>% collect_predictions(parameters = y)
@@ -366,18 +425,7 @@ p2 <- fit_diag %>% pull(cal_plot_post) %>%
 (p1 | p2) 
 
 
-dna_workflow <- workflow() %>%
-    add_recipe(dna_recipe) %>%
-    add_model(rf_spec)
-
-  # --- 5. Fit & Evaluate ---
-  # We need to save predictions to generate the PR Curve later
-  cv_results <- fit_resamples(
-    dna_workflow,
-    resamples = dna_folds,
-    metrics = metric_set(pr_auc, roc_auc, precision, recall),
-    control = control_resamples(save_pred = TRUE, save_workflow = TRUE)
-  )
+cv_results <- fit_diag$cv_tune$no_sampling
 
   best_rf <- select_best(cv_results, metric = "pr_auc")
 
@@ -409,17 +457,19 @@ cv_results %>%
  cv_results %>%
     collect_predictions(parameters = best_rf) %>%
     roc_curve(truth = dna_outcome, .pred_DNA) %>%
-    ggplot(aes(x = 1-specificity, y = sensitivity)) +
-    geom_path(linewidth = 1, color = "midnightblue") +
-    # geom_hline(yintercept = 0.05, lty = 2, color = "red") + # Baseline
-    coord_equal() +
-    theme_bw() +
-    labs(
-      title = "Final Tuned XGBoost PR Curve",
-      subtitle = paste0("PR AUC: ", round(pr_auc_cv, 3)),
-      x = "False positive rate (1 - Specificity)",
-      y = "True positive rate (Sensitivity)"
-    )
+        ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+        geom_abline(slope = 1, linetype = 2, alpha = 0.4) +
+        geom_path(linewidth = 1, color = "midnightblue") +
+        # geom_hline(yintercept = 0.05, lty = 2, color = "red") + # Baseline
+        coord_equal() +
+        theme_bw() +
+        labs(
+          title = "ROC curve",
+          subtitle = paste0("ROC AUC: ", round(roc_auc_cv, 3)),
+          x = "False positive rate (1 - Specificity)",
+          y = "True positive rate (Sensitivity)"
+        )
+
 
 
   # Use training fold predictions to build calibration model
@@ -435,7 +485,7 @@ cv_results %>%
 
   final_fit <- fit(dna_workflow, data = train_raw)
 
-  dataset %>%
+  output <- dataset %>%
     bind_cols(
       predict(final_fit, new_data = ., type = "prob") %>% 
         cal_apply(cal_model)
@@ -448,6 +498,69 @@ cv_results %>%
       roc_auc_cv = roc_auc_cv, 
       pr_auc_cv = pr_auc_cv
     )
+
+
+
+strata_data <- output %>%
+  mutate(
+    risk_prob = .pred_DNA,
+    # Create the buckets
+    risk_strata = case_when(
+      risk_prob >= quantile(risk_prob, 0.95) ~ "1: High (Top 5%)",
+      risk_prob >= quantile(risk_prob, 0.80) ~ "2: Medium (Next 15%)",
+      TRUE ~ "3: Low (Bottom 80%)"
+    ),
+    # Create a 'predicted' class based on the Top 20% being 'DNA'
+    # This replaces the missing .pred_class
+    custom_pred = factor(ifelse(risk_strata %in% c("1: High (Top 5%)", "2: Medium (Next 15%)"), 
+                                "DNA", "attended"),
+                         levels = c("DNA", "attended"))
+  )
+
+
+
+strata_summary <- strata_data %>%
+  group_nest(risk_strata) %>%
+  mutate(metrics = map(data, ~count(.x, dna_outcome) %>% mutate(prop = n/sum(n)))) %>%
+  unnest(metrics)
+
+ggplot(strata_summary, aes(x = risk_strata, y = prop, fill = dna_outcome)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") + # Baseline
+  theme_minimal() +
+  labs(title = "DNA Rate by Risk Strata",
+       subtitle = "Red line represents the population average (5%)",
+       y = "Proportion of Patients", x = "Risk Tier")
+
+
+prop <- mean(train_raw$dna_outcome == "DNA")
+
+strata_data %>%
+  group_by(risk_strata) %>%
+  summarise(
+    total_patients = n(),
+    actual_dnas = sum(dna_outcome == "DNA"),
+    dna_rate = actual_dnas / total_patients
+  ) %>%
+  ggplot(aes(x = risk_strata, y = dna_rate, fill = risk_strata)) +
+  geom_col(show.legend = FALSE) +
+  annotate("text", x = 0.5, y = prop, label = "Population Average", 
+           vjust = -1, hjust = 0, color = "grey40", fontface = "italic") +
+  geom_hline(yintercept = prop, linetype = "dashed", color = "grey40") + # Baseline
+  scale_y_continuous(labels = percent_format()) +
+  paletteer::scale_fill_paletteer_d("nationalparkcolors::Acadia") +
+  theme_minimal() +
+  labs(title = "DNA Rate by Risk Strata",
+subtitle = paste0("Dashed line represents the overall average rate of ", round(prop * 100, 1), "%"),
+       x = "Assigned Risk Tier",
+       y = "Actual DNA rate (%)")
+
+ggsave("materials/strata_plot.png",
+last_plot(),
+bg = "white",
+height = 5,
+width = 7,
+scale = 0.8)
 
 
 

@@ -153,7 +153,7 @@ rf_grid <- grid_space_filling(
 )
 
 set.seed(123)
-dna_folds <- vfold_cv(train_raw, v = 10, strata = dna_outcome)
+dna_folds <- vfold_cv(train_raw, v = 10, group = dim_patient_id, strata = dna_outcome)
 
 #cl <- parallel::makeCluster(parallel::detectCores() - 1, type = "PSOCK", master = "localhost")
 #doParallel::registerDoParallel(cl)

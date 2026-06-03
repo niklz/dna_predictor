@@ -1,2 +1,23 @@
-# Ignore the data directory and all of its contents
-data/
+# ==========================================
+# R/RStudio Junk (Global ignore)
+# ==========================================
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Ignore the RStudio project file itself if you don't want it tracked
+# (Optional: remove the line below if you DO want to track the .Rproj file)
+*.Rproj
+
+# ==========================================
+# Data Folder Restrictions
+# ==========================================
+# 1. Ignore everything inside the data directory
+data/*
+
+# 2. But do not ignore the data directory itself
+!data/
+
+# 3. Explicitly allow ONLY ae_impacts.csv inside data/
+!data/ae_impacts.csv

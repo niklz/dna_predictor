@@ -8,6 +8,7 @@ library(probably)
 
 dataset <- local({
   # Tuned values 28/05/2026
+  model_ver <- "DEV"
   min_n <- 3
   mtry <- 7
   trees <- 781
@@ -156,7 +157,8 @@ dataset <- local({
     event_level = "first"
   )
 
-  final_fit <- fit( finalize_workflow(fits$workflow$no_sampling, parameters = best_rf) , data = train_raw)
+  final_fit <- fit(dna_workflow, data = train_raw)
+
 
   dataset %>%
     bind_cols(
@@ -170,7 +172,12 @@ dataset <- local({
     mutate(
       roc_auc_cv = roc_auc_cv, 
       pr_auc_cv = pr_auc_cv
-    )
+    ) %>%
+    mutate(
+      model_ver = model_ver,
+      prediction_timestamp = Sys.time(),
+      prediction_leadtime = as.numeric(as.POSIXct(appt_dttm, format = "%d/%m/%Y %H:%M") - prediction_timestamp)/(24*60)
+    ) 
 })
 
 output <- dataset

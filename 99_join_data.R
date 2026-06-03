@@ -38,6 +38,8 @@ mutate(src = "n")
 
 
 
+data_joined$dim_patient_id[is.na(data_joined$dim_patient_id)] <- replicate(sum(is.na(data_joined$dim_patient_id)), uuid::UUIDgenerate())
+
 
 saveRDS(data_joined, file = "data/data_joined.RDS")
 

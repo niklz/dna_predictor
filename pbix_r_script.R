@@ -7,11 +7,11 @@ library(dplyr)
 library(probably)
 
 dataset <- local({
-  # Tuned values 28/05/2026
+  # Tuned values 04/06/2026
   model_ver <- "DEV"
-  min_n <- 3
-  mtry <- 7
-  trees <- 781
+  mtry <- 2
+  trees <- 468
+  min_n <- 6
   fct_other_prp <- 0.02
 
   # --- 1. Data Prep ---

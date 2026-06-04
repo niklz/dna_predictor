@@ -483,6 +483,9 @@ cv_results %>%
     event_level = "first"
   )
 
+  dna_workflow <- fits$workflow$no_sampling %>%
+    finalize_workflow(parameters = best_rf)
+
   final_fit <- fit(dna_workflow, data = train_raw)
 
   output <- dataset %>%

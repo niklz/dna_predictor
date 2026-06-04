@@ -22,7 +22,11 @@ dataset <- local({
         levels = c("DNA", "attended")
       ),
       imd = coalesce(as.character(index_multiple_deprivation_decile), "unknown")
-    )
+    ) %>%
+  group_by(dim_patient_id) %>%
+  # If they missed even one appointment, label them "has_missed", otherwise "always_shows"
+  mutate(patient_profile = if_else(any(dna_outcome == "DNA"), "has_missed", "always_shows")) %>%
+  ungroup()
 
   target_col <- "dna_outcome"
 
@@ -73,15 +77,16 @@ dataset <- local({
   # Separate future/unseen data based on your specific index
   train_raw <- dataset %>%
     filter(test_train == "Training") %>%
-    select(all_of(c(target_col, vars)))
+    select(dim_patient_id, patient_profile, all_of(c(target_col, vars)))
   test_raw <- dataset %>%
     filter(test_train != "Training") %>%
-    select(all_of(c(target_col, vars)))
+    select(dim_patient_id, patient_profile, all_of(c(target_col, vars)))
 
   # --- 2. The Recipe (Pre-processing Pipeline) ---
   # Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
+    update_role(patient_profile, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -100,10 +105,13 @@ dataset <- local({
     step_zv(all_predictors()) %>% 
     step_nzv(all_predictors()) %>% 
     step_lencode_mixed(
-      clinic_location,
-      clinic_code,
-      site_code,
-      registered_gp_practice,
+  any_of(c(
+    "clinic_location",
+    "clinic_code",
+    "site_code",
+    "registered_gp_practice"
+  )
+  ),
       outcome = vars(dna_outcome)
     ) %>%
     step_impute_median(all_numeric_predictors()) 
@@ -118,7 +126,7 @@ dataset <- local({
     set_mode("classification")
 
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id)
+  dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id, strata = patient_profile)
 
   # --- 4. The Workflow (The Container) ---
   # This binds the recipe and model so they act as a single unit
@@ -128,6 +136,7 @@ dataset <- local({
 
   # --- 5. Fit & Evaluate ---
   # We need to save predictions to generate the PR Curve later
+
   cv_results <- fit_resamples(
     dna_workflow,
     resamples = dna_folds,
@@ -135,7 +144,8 @@ dataset <- local({
     control = control_resamples(save_pred = TRUE, save_workflow = TRUE)
   )
 
-  best_rf <- select_best(cv_results, metric = "pr_auc")
+
+best_rf <- select_best(cv_results, metric = "pr_auc")
 
   roc_auc_cv <- cv_results %>%
     collect_predictions(parameters = best_rf) %>%
@@ -161,11 +171,25 @@ dataset <- local({
   final_fit <- fit(dna_workflow, data = train_raw)
 
 
-  dataset %>%
+  train_predictions <- dataset %>%
+    filter(test_train == "Training") %>%
+    select(-starts_with(".pred")) %>%
+    bind_cols(
+      cv_preds %>%
+        cal_apply(cal_model) %>%
+        arrange(.row) %>% 
+        select(.pred_DNA, .pred_attended)
+    )
+
+  test_predictions <- dataset %>%
+    filter(test_train == "Testing") %>%
+    select(-starts_with(".pred")) %>% 
     bind_cols(
       predict(final_fit, new_data = ., type = "prob") %>% 
         cal_apply(cal_model)
-    ) %>%
+    )
+
+  bind_rows(train_predictions, test_predictions) %>% 
     mutate(
       prediction_rank = percent_rank(.pred_DNA), 
       .by = test_train
@@ -178,7 +202,7 @@ dataset <- local({
       model_ver = model_ver,
       prediction_timestamp = Sys.time(),
       prediction_leadtime = as.numeric(as.POSIXct(appt_dttm, format = "%d/%m/%Y %H:%M") - prediction_timestamp)/(24*60)
-    ) 
+    )
 })
 
 output <- dataset

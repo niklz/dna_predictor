@@ -505,6 +505,7 @@ cv_results %>%
 
 
 strata_data <- output %>%
+  filter(test_train == "Training") %>%
   mutate(
     risk_prob = .pred_DNA,
     # Create the buckets
@@ -536,8 +537,8 @@ ggplot(strata_summary, aes(x = risk_strata, y = prop, fill = dna_outcome)) +
        y = "Proportion of Patients", x = "Risk Tier")
 
 
-prop <- mean(train_raw$dna_outcome == "DNA")
-
+# prop <- mean(train_raw$dna_outcome == "DNA")
+prop  <- dataset %>% filter(test_train == "Training") %>% pull(dna_outcome) %>% `==`("DNA") %>% mean()
 strata_data %>%
   group_by(risk_strata) %>%
   summarise(

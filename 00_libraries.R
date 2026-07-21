@@ -8,4 +8,8 @@ library(ranger)
 library(ggplot2)
 library(vip)
 library(probably)
+library(tidymodels)
+library(embed) # For step_lmer (High-cardinality encoding)
+library(themis)
+library(tictoc)
 

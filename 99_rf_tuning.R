@@ -25,7 +25,11 @@ fct_other_prp <- 0.02
         levels = c("DNA", "attended")
       ),
       imd = coalesce(as.character(index_multiple_deprivation_decile), "unknown")
-    )
+    ) %>%
+  group_by(dim_patient_id) %>%
+  # If they missed even one appointment, label them "has_missed", otherwise "always_shows"
+  mutate(patient_profile = if_else(any(dna_outcome == "DNA"), "has_missed", "always_shows")) %>%
+  ungroup()
 
   target_col <- "dna_outcome"
 
@@ -76,15 +80,16 @@ fct_other_prp <- 0.02
   # Separate future/unseen data based on your specific index
   train_raw <- dataset %>%
     filter(test_train == "Training") %>%
-    select(all_of(c(target_col, vars, "dim_patient_id")))
+    select(dim_patient_id, patient_profile, all_of(c(target_col, vars)))
   test_raw <- dataset %>%
     filter(test_train != "Training") %>%
-    select(all_of(c(target_col, vars, "dim_patient_id")))
+    select(dim_patient_id, patient_profile, all_of(c(target_col, vars)))
 
   # --- 2. The Recipe (Pre-processing Pipeline) ---
   # Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
+        update_role(patient_profile, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -110,6 +115,7 @@ fct_other_prp <- 0.02
   
   dna_recipe_ns <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
+        update_role(patient_profile, new_role = "id") %>%
     step_mutate(
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
@@ -154,7 +160,7 @@ rf_grid <- grid_space_filling(
 )
 
 set.seed(123)
-dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id)
+dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id, strata = patient_profile)
 
 
 dna_folds %>%

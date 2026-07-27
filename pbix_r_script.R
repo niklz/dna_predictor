@@ -7,8 +7,8 @@ library(dplyr)
 library(probably)
 
 dataset <- local({
-  # Tuned values 04/06/2026
-  model_ver <- "DEV"
+  # Tuned values 08/06/2026
+  model_hash <- "DEV"
   mtry <- 2
   trees <- 468
   min_n <- 6
@@ -199,7 +199,7 @@ best_rf <- select_best(cv_results, metric = "pr_auc")
       pr_auc_cv = pr_auc_cv
     ) %>%
     mutate(
-      model_ver = model_ver,
+      model_hash = model_hash,
       prediction_timestamp = Sys.time(),
       prediction_leadtime = as.numeric(as.POSIXct(appt_dttm, format = "%d/%m/%Y %H:%M") - prediction_timestamp)/(24*60)
     )

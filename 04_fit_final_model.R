@@ -1,3 +1,6 @@
+source("00_libraries.R")
+source("01_hyperparams.R")
+
 
 if(tune_model) {
   source("03_tune_model.R")
@@ -13,7 +16,7 @@ if(!tune_model) {
 model <- local({
   
   params <- model_tune$best_params
-  wf <- model_tune$fits %>% extract_workflow()
+  wf <- model_tune$tune_res %>% extract_workflow()
   fit <- wf %>%
     finalize_workflow(params) %>%
     fit(data = train_raw)
@@ -21,3 +24,4 @@ model <- local({
   fit
 })
 
+vip::vip(model, 40)

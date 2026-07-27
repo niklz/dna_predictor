@@ -2,11 +2,64 @@ source("02_data_prep.R")
 
 
 model_tune <- local({
+  
+  collect_ethnicity <- function(x) {
+    dplyr::case_when(
+      x %in% c("Not Stated", "Not Known", "Not Collected At This Time", "Not Set") ~ "Unknown",
+      x %in% c("White - British", "White - Any other White background", "White - Irish", "Any other White background") ~ "White",
+      x %in% c("Asian or Asian British - Indian", "Asian - Indian or British Indian", 
+               "Asian or Asian British - Pakistani", "Asian - Pakistani or British Pakistani",
+               "Asian or Asian British - Bangladeshi", "Asian - Bangladeshi or British Bangladeshi",
+               "Asian or Asian British - Any other Asian background", "Asian - Any other Asian background") ~ "Asian",
+      x %in% c("Black or Black British - Caribbean", "Black - Caribbean or Black British Caribbean",
+               "Black Caribbean", "Black or Black British - African", 
+               "Black  - African or British African", "Black or Black British - Any other Black background",
+               "Black - Any other Black background") ~ "Black",
+      x %in% c("Mixed - White and Black African", "Mixed - Any other background", 
+               "Mixed - White and Black Caribbean", "Mixed - White and Asian", "Any other Mixed Background") ~ "Mixed",
+      x %in% c("Other Ethnic Group - Chinese", "Chinese", "Any Other Ethnic Group", "Any other Ethnic Group") ~ "Other",
+      TRUE ~ "Unknown"
+    )
+  }
+  
+  aggregate_ethnicity_high_level <- function(x) {
+    # Standardise string inputs
+    x_clean <- trimws(tolower(as.character(x)))
+    
+    dplyr::case_when(
+      # Unknown / Missing / Unspecified
+      x_clean %in% c("unknown", "not stated", "not known", 
+                     "not collected at this time", "not set") ~ "Unknown",
+      
+      # White
+      grepl("^white", x_clean) ~ "White",
+      
+      # Asian / Asian British
+      grepl("^asian", x_clean) ~ "Asian",
+      
+      # Black / Black British
+      grepl("^black", x_clean) ~ "Black",
+      
+      # Mixed / Multiple Ethnic Groups
+      grepl("^mixed", x_clean) ~ "Mixed",
+      
+      # Chinese and Other Ethnic Groups
+      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Other",
+      
+      # Catch-all fallback
+      TRUE ~ "Unknown"
+    )
+  }
+  
 # --- 2. The Recipe (Pre-processing Pipeline) ---
 # Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
+      ethnicity_clean = clean_ethnicity(ethnicity),
+      ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
+      # Set the baseline reference level to the most frequent category
+      ethnicity_group = factor(ethnicity_group) %>% relevel(ref = "White"),
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
@@ -21,7 +74,9 @@ model_tune <- local({
             lead_time_days,
             appt_date,
             appt_month,
-            prev_dna_ly) %>%
+            prev_dna_ly,
+            ethnicity,
+            ethnicity_clean) %>%
     step_novel(all_nominal_predictors()) %>%
     step_unknown(all_nominal_predictors(), -imd) %>%
     step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%

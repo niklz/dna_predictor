@@ -57,6 +57,11 @@ vars <- c(
   "imd"
 )
 
+# Flag to tune model params over grid (this is slow), otherwise use pre-trained model
+tune_model <- FALSE
+# Number of worker to parallelise (note that ranger already uses 4 threads per worker so set this accordingly!)
+num_workers <- 6
+
 # RF hyperparams
 tree_range <- c(250, 1000)
 mtry <- 2

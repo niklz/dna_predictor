@@ -1,9 +1,9 @@
 source("02_data_prep.R")
 
-# --- 2. The Recipe (Pre-processing Pipeline) ---
-# Tidymodels handles "knowledge separation" automatically.
 
 model_tune <- local({
+# --- 2. The Recipe (Pre-processing Pipeline) ---
+# Tidymodels handles "knowledge separation" automatically.
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
@@ -81,7 +81,7 @@ model_tune <- local({
   #doParallel::registerDoParallel(cl)
   
   registerDoFuture()
-  plan(multisession, workers = 9)
+  plan(multisession, workers = 9, maxSizeOfObjects = 2000 * 1024^2)
   
   tic("Tidymodels grid tuning")
   
@@ -101,8 +101,7 @@ model_tune <- local({
   
   toc()
   
-  saveRDS(fits, "data/rf_tuning_fits.RDS")
-  fits <- readRDS("data/rf_tuning_fits.RDS")
+
   
   # best_params
   best_params <- fits %>%
@@ -205,3 +204,7 @@ model_tune <- local({
     roc_plot = roc_plot
   )
 })
+
+saveRDS(model_tune, "data/rf_tune.RDS")
+saveRDS(fits, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
+

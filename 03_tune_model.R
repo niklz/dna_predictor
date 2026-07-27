@@ -81,7 +81,7 @@ model_tune <- local({
   #doParallel::registerDoParallel(cl)
   
   registerDoFuture()
-  plan(multisession, workers = 9, maxSizeOfObjects = 2000 * 1024^2)
+  plan(multisession, workers = num_workers, maxSizeOfObjects = 2000 * 1024^2)
   
   tic("Tidymodels grid tuning")
   

@@ -76,7 +76,8 @@ model_tune <- local({
             appt_month,
             prev_dna_ly,
             ethnicity,
-            ethnicity_clean) %>%
+            ethnicity_clean,
+            dim_patient_id) %>%
     step_novel(all_nominal_predictors()) %>%
     step_unknown(all_nominal_predictors(), -imd) %>%
     step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%

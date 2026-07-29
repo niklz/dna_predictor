@@ -56,7 +56,7 @@ model_tune <- local({
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
-      ethnicity_clean = clean_ethnicity(ethnicity),
+      ethnicity_clean = collect_ethnicity(ethnicity),
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
       ethnicity_group = factor(ethnicity_group) %>% relevel(ref = "White"),
@@ -262,5 +262,5 @@ model_tune <- local({
 })
 
 saveRDS(model_tune, "data/rf_tune.RDS")
-saveRDS(fits, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
+saveRDS(model_tune, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
 

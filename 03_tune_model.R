@@ -35,16 +35,16 @@ model_tune <- local({
       grepl("^white", x_clean) ~ "White",
       
       # Asian / Asian British
-      grepl("^asian", x_clean) ~ "Global majority",
+      grepl("^asian", x_clean) ~ "Asian",
       
       # Black / Black British
-      grepl("^black", x_clean) ~ "Global majority",
+      grepl("^black", x_clean) ~ "Black",
       
       # Mixed / Multiple Ethnic Groups
-      grepl("^mixed", x_clean) ~ "Global majority",
+      grepl("^mixed", x_clean) ~ "Mixed",
       
       # Chinese and Other Ethnic Groups
-      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Global majority",
+      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Chinese",
       
       # Catch-all fallback
       TRUE ~ "Unknown"
@@ -77,6 +77,7 @@ model_tune <- local({
             prev_dna_ly,
             ethnicity,
             ethnicity_clean,
+            age_group, # we have age_at_appointment which is better, can always group later
             dim_patient_id) %>%
     step_novel(all_nominal_predictors()) %>%
     step_unknown(all_nominal_predictors(), -imd) %>%
@@ -260,6 +261,7 @@ model_tune <- local({
     roc_plot = roc_plot
   )
 })
+
 
 saveRDS(model_tune, "data/rf_tune.RDS")
 saveRDS(model_tune, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")

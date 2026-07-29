@@ -1,7 +1,7 @@
 library(ggplot2)
-library(dplyr)
 library(ggalluvial)
 library(broom)
+library(dplyr)
 
 simulate_clinical_trial_advanced <- function(
     weeks_to_simulate = 8,
@@ -142,14 +142,14 @@ simulate_clinical_trial_advanced <- function(
   
   sim_processed <- sim_arrivals %>%
     left_join(sim_attributes, by = "name") %>%
-    select(sim_idx, outcome_status, call_time, appt_time, tier1_text_time, 
+    dplyr::select(sim_idx, outcome_status, call_time, appt_time, tier1_text_time, 
            tier2_text_time, wants_to_cancel, days_until_appt)
   
   # Step 4: Merge & Add Timings for Non-Intervention
   intervention_manifest <- trial_manifest %>% 
     filter(trial_arm == "Intervention") %>% 
     mutate(sim_idx = row_number()) %>% 
-    left_join(sim_processed, by = "sim_idx") %>% select(-sim_idx) %>% 
+    left_join(sim_processed, by = "sim_idx") %>% dplyr::select(-sim_idx) %>% 
     mutate(
       arrival_time = (week - 1) * mins_per_week,
       days_until_appt = ifelse(is.na(days_until_appt), runif(n(), min = 4, max = 14), days_until_appt),
@@ -203,7 +203,7 @@ simulate_clinical_trial_advanced <- function(
   # MINIMAL SOP DATASET (What you actually need to record in real life)
   # =======================================================================
   sop_dataset <- final_trial_dataset %>%
-    select(
+    dplyr::select(
       patient_id,
       trial_arm,              
       risk_profile,           
@@ -393,7 +393,7 @@ plot_transition_time_distributions <- function(trial_data) {
       # Time from Call to Appointment
       dur_call_to_appt = ifelse(intervened_by_phone == TRUE, (appt_time - call_time) / 60, (appt_time - tier2_text_time) / 60)
     ) %>%
-    select(patient_id, trial_arm, dur_list_to_t1, dur_t1_to_t2, dur_t2_to_call) %>%
+    dplyr::select(patient_id, trial_arm, dur_list_to_t1, dur_t1_to_t2, dur_t2_to_call) %>%
     pivot_longer(
       cols = starts_with("dur_"),
       names_to = "Transition_Stage",
@@ -662,7 +662,7 @@ plot_branch_milestone_spread <- function(trial_data, target_arm = "Intervention"
       t_call    = ifelse(!is.na(call_time), call_time / 60, NA_real_),
       t_appt    = appt_time / 60
     ) %>%
-    select(patient_id, pathway_type, t_arrival, t_tier1, t_tier2, t_call, t_appt) %>%
+    dplyr::select(patient_id, pathway_type, t_arrival, t_tier1, t_tier2, t_call, t_appt) %>%
     pivot_longer(cols = starts_with("t_"), names_to = "Milestone", values_to = "Hours") %>%
     filter(!is.na(Hours)) %>%
     mutate(
@@ -706,7 +706,7 @@ plot_branch_latency_bars <- function(trial_data) {
       lag_t2_to_call = ifelse(!is.na(call_time), (call_time - tier2_text_time) / 60, NA_real_),
       lag_call_to_appt = ifelse(!is.na(call_time), (appt_time - call_time) / 60, (appt_time - tier2_text_time) / 60)
     ) %>%
-    select(pathway_type, lag_t1_to_t2, lag_t2_to_call, lag_call_to_appt) %>%
+    dplyr::select(pathway_type, lag_t1_to_t2, lag_t2_to_call, lag_call_to_appt) %>%
     pivot_longer(cols = starts_with("lag_"), names_to = "Transition", values_to = "Duration_Hours") %>%
     filter(!is.na(Duration_Hours) & Duration_Hours >= 0) %>%
     group_by(pathway_type, Transition) %>%

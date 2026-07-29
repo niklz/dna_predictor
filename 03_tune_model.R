@@ -35,16 +35,16 @@ model_tune <- local({
       grepl("^white", x_clean) ~ "White",
       
       # Asian / Asian British
-      grepl("^asian", x_clean) ~ "Asian",
+      grepl("^asian", x_clean) ~ "Global majority",
       
       # Black / Black British
-      grepl("^black", x_clean) ~ "Black",
+      grepl("^black", x_clean) ~ "Global majority",
       
       # Mixed / Multiple Ethnic Groups
-      grepl("^mixed", x_clean) ~ "Mixed",
+      grepl("^mixed", x_clean) ~ "Global majority",
       
       # Chinese and Other Ethnic Groups
-      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Other",
+      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Global majority",
       
       # Catch-all fallback
       TRUE ~ "Unknown"

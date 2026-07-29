@@ -1,10 +1,10 @@
 library(simmer)
-library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(sandwich)
 library(lmtest)
 library(broom)
+library(dplyr)
 
 source("99_utils.R")
 

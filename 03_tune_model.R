@@ -77,6 +77,7 @@ model_tune <- local({
             prev_dna_ly,
             ethnicity,
             ethnicity_clean,
+            age, # we have age_group so best to use one
             dim_patient_id) %>%
     step_novel(all_nominal_predictors()) %>%
     step_unknown(all_nominal_predictors(), -imd) %>%

@@ -46,7 +46,7 @@ ex_local <- explain(
 baseline <- mean(pfun(raw_rf, newdata = bg_X))
 shv <- shapviz(ex_local, X = single_row, baseline = baseline)
 
-sv_waterfall(shv)
+sv_waterfall(shv, max_display = 41)
 
 # Sample 1000 rows to explain for the global plot
 explain_sample <- train_baked[sample(nrow(train_baked), 1000), ]

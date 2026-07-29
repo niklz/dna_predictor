@@ -35,16 +35,16 @@ model_tune <- local({
       grepl("^white", x_clean) ~ "White",
       
       # Asian / Asian British
-      grepl("^asian", x_clean) ~ "Global majority",
+      grepl("^asian", x_clean) ~ "Asian",
       
       # Black / Black British
-      grepl("^black", x_clean) ~ "Global majority",
+      grepl("^black", x_clean) ~ "Black",
       
       # Mixed / Multiple Ethnic Groups
-      grepl("^mixed", x_clean) ~ "Global majority",
+      grepl("^mixed", x_clean) ~ "Mixed",
       
       # Chinese and Other Ethnic Groups
-      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Global majority",
+      grepl("chinese", x_clean) | grepl("other", x_clean) ~ "Chinese",
       
       # Catch-all fallback
       TRUE ~ "Unknown"
@@ -56,7 +56,7 @@ model_tune <- local({
   dna_recipe <- recipe(dna_outcome ~ ., data = train_raw) %>%
     update_role(dim_patient_id, new_role = "id") %>%
     step_mutate(
-      ethnicity_clean = clean_ethnicity(ethnicity),
+      ethnicity_clean = collect_ethnicity(ethnicity),
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
       ethnicity_group = factor(ethnicity_group) %>% relevel(ref = "White"),
@@ -77,7 +77,7 @@ model_tune <- local({
             prev_dna_ly,
             ethnicity,
             ethnicity_clean,
-            age, # we have age_group so best to use one
+            age_group, # we have age_at_appointment which is better, can always group later
             dim_patient_id) %>%
     step_novel(all_nominal_predictors()) %>%
     step_unknown(all_nominal_predictors(), -imd) %>%
@@ -262,6 +262,7 @@ model_tune <- local({
   )
 })
 
+
 saveRDS(model_tune, "data/rf_tune.RDS")
-saveRDS(fits, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
+saveRDS(model_tune, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
 

@@ -14,25 +14,46 @@ library(legendry)
 # STEP 1: FAST SHAP COMPUTATION (ON BAKED DATA)
 # ==============================================================================
 
-# Extract model engine & recipe
 raw_rf <- extract_fit_engine(model)
 rec    <- extract_recipe(model)
 
-# Pre-bake data ONCE (Fast!)
+# Pre-bake data ONCE
 train_baked <- bake(rec, new_data = train_raw) %>% select(-any_of(target_col))
 
-# Background and explanation samples
+# ------------------------------------------------------------------------------
+# THE SHAP CAVEAT: BACKGROUND VS. EXPLANATION DATA
+# ------------------------------------------------------------------------------
+# 1. Background Data: MUST be a simple random sample. 
+#    This sets the "base value" (average prediction). If you skew this, 
+#    you artificially change what the model considers "normal".
 set.seed(123)
-sample_indices <- sample(nrow(train_raw), 1000)
+bg_X_baked <- train_baked[sample(nrow(train_baked), 300), ]
 
-bg_X_baked          <- train_baked[sample(nrow(train_baked), 300), ]
+# 2. Explanation Data: Use Inverse Frequency Weighting to oversample rare types.
+#    Pick the columns that define your sub-populations (e.g., ethnicity & urgency)
+stratify_cols <- c("ethnicity", "referral_urgency")
+
+# Calculate weights: 1 / (number of patients in that specific group)
+weighting_df <- train_raw %>%
+  select(all_of(stratify_cols)) %>%
+  add_count(across(all_of(stratify_cols)), name = "group_n") %>%
+  mutate(sample_weight = 1 / group_n)
+
+# Sample indices using probabilities based on our calculated weights
+set.seed(123)
+sample_indices <- sample(
+  seq_len(nrow(train_raw)), 
+  size = 1000, 
+  prob = weighting_df$sample_weight, 
+  replace = FALSE 
+)
+
 explain_sample_baked <- train_baked[sample_indices, ]
 
 # Keep matching RAW data sample for plotting labels later
 explain_sample_raw   <- train_raw[sample_indices, ] %>% 
   select(-any_of(target_col)) %>%
   mutate(
-    # Apply high-level grouping to raw ethnicity for reporting
     ethnicity_group = case_when(
       ethnicity %in% c("unknown", "not stated", "not known", 
                        "not collected at this time", "not set") ~ "Unknown",
@@ -41,7 +62,7 @@ explain_sample_raw   <- train_raw[sample_indices, ] %>%
     )
   )
 
-# Prediction wrapper running directly on ranger engine (No recipe overhead!)
+# Prediction wrapper running directly on ranger engine
 pfun <- function(object, newdata) {
   predict(object, data = newdata)$predictions[, 1]
 }

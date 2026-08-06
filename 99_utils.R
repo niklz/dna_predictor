@@ -2,6 +2,7 @@ library(ggplot2)
 library(ggalluvial)
 library(broom)
 library(dplyr)
+library(purrr)
 
 simulate_clinical_trial_advanced <- function(
     weeks_to_simulate = 8,
@@ -9,17 +10,17 @@ simulate_clinical_trial_advanced <- function(
     ml_high_risk_prop = 0.25,
     trial_allocation_ratio = 0.50,
     
-    # Coordinator Constraints
+    # Coordinator Constraints (Applies ONLY to High-Risk Intervention)
     coordinator_capacity = 1,
     max_calls_per_week = 100,
     response_prob = 0.30,
     prob_wish_to_cancel = 0.20,
     
     # INCREMENTAL EFFECT SIZES (Risk Ratios)
-    rr_tier1          = 0.95,  # 5% relative reduction from universal text
-    rr_tier2_passive  = 0.90,  # 10% relative reduction from passive text
-    rr_tier2_interact = 0.85,  # 15% relative reduction from interactive gate
-    rr_tier3_call     = 0.40   # 60% relative reduction if reached by phone
+    rr_tier1          = 0.95,  
+    rr_tier2_passive  = 0.90,  
+    rr_tier2_interact = 0.85,  
+    rr_tier3_call     = 0.40   
 ) {
   
   mins_per_day <- 1440
@@ -48,90 +49,116 @@ simulate_clinical_trial_advanced <- function(
       )
     )
   
-  sim_batch_sizes <- trial_manifest %>% filter(trial_arm == "Intervention") %>% count(week) %>% pull(n)
-  weekly_timestamps <- seq(0, by = mins_per_week, length.out = num_weeks)
-  batch_arrival_times <- rep(weekly_timestamps, times = sim_batch_sizes)
+  # Split cleanly into Intervention vs Non-Intervention (Control + Low-Risk)
+  intervention_df <- trial_manifest %>% filter(trial_arm == "Intervention") %>% mutate(sim_idx = row_number())
+  standard_df <- trial_manifest %>% filter(trial_arm != "Intervention") %>% mutate(sim_idx = row_number())
   
-  # Step 2: DES Simulation Process with 3-Way Intent Branching & 1-Day Cut-off
+  intervention_arrivals <- (intervention_df$week - 1) * mins_per_week
+  standard_arrivals <- (standard_df$week - 1) * mins_per_week
+  
+  # Step 2: DES Simulation Process
   env <- simmer("trial_pathway")
-  patient_path <- trajectory("High_Risk_Intervention_Journey") %>%
-    set_attribute("arrival_time", function() { now(env) }) %>%
+  
+  intervention_path <- trajectory("High_Risk_Intervention_Journey") %>%
+    set_attribute("arrival_time", function() { simmer::now(env) }) %>%
     set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
-    set_attribute("appt_time", function() { now(env) + (get_attribute(env, "days_until_appt") * mins_per_day) }) %>%
-    set_attribute("tier1_text_time", function() { get_attribute(env, "appt_time") - (7 * mins_per_day) + rnorm(1, 0, 120) }) %>%
+    set_attribute("appt_time", function() { simmer::now(env) + (get_attribute(env, "days_until_appt") * mins_per_day) }) %>%
     
-    # Wait until Tier 2 text time (3 days before appt)
-    timeout(function() { max(0, (get_attribute(env, "days_until_appt") - 3) * mins_per_day) }) %>%
-    set_attribute("tier2_text_time", function() { now(env) + rnorm(1, 0, 60) }) %>%
+    # FIX 1: Prevent Tier 1 from time-traveling before trial entry
+    set_attribute("tier1_text_time", function() { 
+      base_t1 <- get_attribute(env, "appt_time") - (7 * mins_per_day) + rnorm(1, 0, 120)
+      max(simmer::now(env), base_t1) 
+    }) %>%
     
-    # MODELING RESPONSE TIMING & 3-WAY INTENT:
+    # FIX 2: Physically advance the clock before sending Tier 2
+    timeout(function() { 
+      target_t2 <- get_attribute(env, "appt_time") - (3 * mins_per_day) + rnorm(1, 0, 60)
+      max(0, target_t2 - simmer::now(env)) 
+    }) %>%
+    set_attribute("tier2_text_time", function() { simmer::now(env) }) %>%
     set_attribute("response_delay_hours", function() { rexp(1, rate = 1/12) }) %>% 
     
     branch(
       function() {
         appt_t <- get_attribute(env, "appt_time")
-        curr_t <- now(env)
+        curr_t <- simmer::now(env)
         delay_mins <- get_attribute(env, "response_delay_hours") * 60
         response_t <- curr_t + delay_mins
-        cutoff_t <- appt_t - mins_per_day # 1 workday (24 hours) before appointment cut-off
+        cutoff_t <- appt_t - mins_per_day 
         
         did_respond <- rbinom(1, 1, response_prob)
         
-        if (did_respond == 0 || response_t > cutoff_t) {
-          return(3) # Route 3: No-Response / Late Response (Needs Call)
-        }
-        
-        intent <- sample(c(1, 2), size = 1, prob = c(0.70, 0.30))
-        return(intent) # Route 1 (Confirm) or Route 2 (Reschedule/Cancel)
+        if (did_respond == 0 || response_t > cutoff_t) { return(3) }
+        return(sample(c(1, 2), size = 1, prob = c(0.70, 0.30))) 
       },
       continue = c(TRUE, TRUE, TRUE),
       
-      # ROUTE 1: Confirm via text (No further interaction needed)
       trajectory("Intent_Confirm") %>%
         set_attribute("response_type", 1) %>%
         set_attribute("outcome_status", 2),
       
-      # ROUTE 2: Reschedule/Cancel requested (Necessitates Coordinator Call)
       trajectory("Intent_Reschedule_Cancel") %>%
         set_attribute("response_type", 2) %>%
+        # FIX 3a: Wait out the response delay before hitting the queue
+        timeout(function() { get_attribute(env, "response_delay_hours") * 60 }) %>%
         renege_in(
-          t = function() { max(0, get_attribute(env, "appt_time") - now(env)) },
+          t = function() { max(0, get_attribute(env, "appt_time") - simmer::now(env)) },
           out = trajectory() %>% set_attribute("outcome_status", 0) 
         ) %>%
         seize("coordinator", 1) %>%
         renege_abort() %>% 
-        set_attribute("call_time", function() { now(env) }) %>%
+        set_attribute("call_time", function() { simmer::now(env) }) %>%
         timeout(function() { max(5, rnorm(1, mean = mean_handling_time, sd = 5)) }) %>%
         set_attribute("wants_to_cancel", 1) %>% 
         release("coordinator", 1) %>%
         set_attribute("outcome_status", 1),
       
-      # ROUTE 3: No-Response / Late Response (Necessitates Coordinator Call to chase)
       trajectory("Intent_No_Response") %>%
         set_attribute("response_type", 3) %>%
+        # FIX 3b: Wait until exactly the 24-hour cutoff before triggering chase
+        timeout(function() { 
+          max(0, get_attribute(env, "appt_time") - mins_per_day - simmer::now(env)) 
+        }) %>%
         renege_in(
-          t = function() { max(0, get_attribute(env, "appt_time") - now(env)) },
+          t = function() { max(0, get_attribute(env, "appt_time") - simmer::now(env)) },
           out = trajectory() %>% set_attribute("outcome_status", 0) 
         ) %>%
         seize("coordinator", 1) %>%
         renege_abort() %>% 
-        set_attribute("call_time", function() { now(env) }) %>%
+        set_attribute("call_time", function() { simmer::now(env) }) %>%
         timeout(function() { max(5, rnorm(1, mean = mean_handling_time, sd = 5)) }) %>%
         set_attribute("wants_to_cancel", function() { rbinom(1, 1, prob_wish_to_cancel) }) %>%
         release("coordinator", 1) %>%
         set_attribute("outcome_status", 1)
     )
   
+  # Ensure standard paths adhere to chronological limits as well
+  standard_path <- trajectory("Standard_Care_Journey") %>%
+    set_attribute("arrival_time", function() { simmer::now(env) }) %>%
+    set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
+    set_attribute("appt_time", function() { simmer::now(env) + (get_attribute(env, "days_until_appt") * mins_per_day) }) %>%
+    set_attribute("tier1_text_time", function() { 
+      base_t1 <- get_attribute(env, "appt_time") - (7 * mins_per_day) + rnorm(1, 0, 120)
+      max(simmer::now(env), base_t1)
+    }) %>%
+    set_attribute("tier2_text_time", function() { 
+      base_t2 <- get_attribute(env, "appt_time") - (3 * mins_per_day) + rnorm(1, 0, 60)
+      max(get_attribute(env, "tier1_text_time"), base_t2) # Must happen after Tier 1
+    })
+  
   working_hours <- schedule(timetable = c(0, 9*60, 17*60), values = c(0, coordinator_capacity, 0), period = mins_per_day)
   
   env %>%
     add_resource("coordinator", capacity = working_hours) %>%
-    add_generator("Intervention_Patient_", patient_path, at(batch_arrival_times), mon = 2) %>%
+    add_generator("Intervention_", intervention_path, at(intervention_arrivals), mon = 2) %>%
+    add_generator("Standard_", standard_path, at(standard_arrivals), mon = 2) %>%
     run(until = total_sim_time)
   
-  # Step 3: Extract Attributes safely
   sim_arrivals <- get_mon_arrivals(env) %>% 
-    mutate(sim_idx = as.numeric(sub("Intervention_Patient_", "", name)) + 1)
+    mutate(
+      arm_group = sub("_.*", "", name),
+      sim_idx = as.numeric(sub(".*_", "", name)) + 1 
+    )
   
   safe_max <- function(x) { if (all(is.na(x))) return(NA_real_) else return(max(x, na.rm = TRUE)) }
   
@@ -140,34 +167,27 @@ simulate_clinical_trial_advanced <- function(
     pivot_wider(names_from = key, values_from = value) %>%
     group_by(name) %>% summarise(across(everything(), safe_max), .groups = "drop")
   
-  sim_processed <- sim_arrivals %>%
-    left_join(sim_attributes, by = "name") %>%
-    dplyr::select(sim_idx, outcome_status, call_time, appt_time, tier1_text_time, 
-           tier2_text_time, wants_to_cancel, days_until_appt)
+  sim_processed <- sim_arrivals %>% left_join(sim_attributes, by = "name")
   
-  # Step 4: Merge & Add Timings for Non-Intervention
-  intervention_manifest <- trial_manifest %>% 
-    filter(trial_arm == "Intervention") %>% 
-    mutate(sim_idx = row_number()) %>% 
-    left_join(sim_processed, by = "sim_idx") %>% dplyr::select(-sim_idx) %>% 
+  expected_cols <- c("outcome_status", "call_time", "appt_time", "tier1_text_time", "tier2_text_time", "wants_to_cancel", "days_until_appt")
+  for (col in expected_cols) { if (!col %in% names(sim_processed)) sim_processed[[col]] <- NA_real_ }
+  
+  intervention_manifest <- intervention_df %>%
+    left_join(sim_processed %>% filter(arm_group == "Intervention"), by = "sim_idx") %>% 
+    dplyr::select(-sim_idx, -name, -arm_group) %>% 
     mutate(
-      arrival_time = (week - 1) * mins_per_week,
-      days_until_appt = ifelse(is.na(days_until_appt), runif(n(), min = 4, max = 14), days_until_appt),
-      appt_time = ifelse(is.na(appt_time), arrival_time + (days_until_appt * mins_per_day), appt_time),
-      tier1_text_time = ifelse(is.na(tier1_text_time), appt_time - (7 * mins_per_day) + rnorm(n(), 0, 120), tier1_text_time),
-      tier2_text_time = ifelse(is.na(tier2_text_time), appt_time - (3 * mins_per_day) + rnorm(n(), 0, 60), tier2_text_time),
       outcome_status = replace_na(outcome_status, -1),
       sms_tier2_type = "Interactive Gate"
     )
   
-  non_intervention_manifest <- trial_manifest %>%
-    filter(trial_arm != "Intervention") %>%
+  non_intervention_manifest <- standard_df %>%
+    left_join(sim_processed %>% filter(arm_group == "Standard"), by = "sim_idx") %>%
+    dplyr::select(-sim_idx, -name, -arm_group) %>% 
     mutate(
-      outcome_status = -2, call_time = NA_real_, days_until_appt = runif(n(), min = 4, max = 14),
-      arrival_time = (week - 1) * mins_per_week, appt_time = arrival_time + (days_until_appt * mins_per_day),
-      tier1_text_time = appt_time - (7 * mins_per_day) + rnorm(n(), 0, 120), 
-      tier2_text_time = appt_time - (3 * mins_per_day) + rnorm(n(), 0, 60),
-      wants_to_cancel = 0, sms_tier2_type = "Passive Reminder"
+      outcome_status = -2, 
+      wants_to_cancel = 0, 
+      sms_tier2_type = "Passive Reminder",
+      call_time = NA_real_ 
     )
   
   final_trial_dataset <- bind_rows(intervention_manifest, non_intervention_manifest) %>%
@@ -182,37 +202,28 @@ simulate_clinical_trial_advanced <- function(
         trial_arm == "Control" ~ "Standard High-Risk Control Track",
         outcome_status == 0 ~ "Intervention Arm: Missed (Queue Timeout)",
         outcome_status == 1 & wants_to_cancel == 1 ~ "Intervention Arm: Cancelled via Coordinator",
-        outcome_status == 1 & wants_to_cancel == 0 ~ "Intervention Arm: Confirmed via Coordinator"
+        outcome_status == 1 & wants_to_cancel == 0 ~ "Intervention Arm: Confirmed via Coordinator",
+        TRUE ~ "Completed Auto-Text Only"
       ),
       
-      modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * 
-        ifelse(sms_tier2_type == "Passive Reminder", rr_tier2_passive, rr_tier2_interact) * 
-        ifelse(pathway_outcome == "Intervention Arm: Confirmed via Coordinator", rr_tier3_call, 1),
+      modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * ifelse(sms_tier2_type == "Passive Reminder", rr_tier2_passive, rr_tier2_interact) * ifelse(pathway_outcome == "Intervention Arm: Confirmed via Coordinator", rr_tier3_call, 1),
       
       modulated_dna_prob = pmin(1, pmax(0, modulated_dna_prob)),
       
       final_attendance = case_when(
-        pathway_outcome %in% c("Simulation Truncated", "Intervention Arm: Pending in Queue") ~ "Censored",
+        pathway_outcome %in% c("Simulation Truncated", "Intervention Arm: Pending in Queue", "Intervention Arm: Missed (Queue Timeout)") ~ "Censored",
         pathway_outcome == "Intervention Arm: Cancelled via Coordinator" ~ "Cancelled",
         runif(n()) < modulated_dna_prob ~ "DNA",
         TRUE ~ "Attended"
       )
     )
   
-  # =======================================================================
-  # MINIMAL SOP DATASET (What you actually need to record in real life)
-  # =======================================================================
+  # Final Dataset - Preserving all columns required for mapping
   sop_dataset <- final_trial_dataset %>%
     dplyr::select(
-      patient_id,
-      trial_arm,              
-      risk_profile,           
-      ml_baseline_risk,       
-      sms_tier2_type,         
-      intervened_by_phone,    
-      final_attendance,       
-      arrival_time, appt_time, 
-      tier1_text_time, tier2_text_time, call_time 
+      patient_id, trial_arm, risk_profile, ml_baseline_risk,       
+      sms_tier2_type, intervened_by_phone, final_attendance,       
+      arrival_time, appt_time, tier1_text_time, tier2_text_time, call_time, pathway_outcome 
     )
   
   return(sop_dataset)
@@ -245,16 +256,15 @@ plot_trial_journeys <- function(trial_data, num_samples_per_group = 3) {
               start = pmax(0, pmin(arrival_time, tier1_text_time, na.rm = TRUE) / 60),
               end = appt_time / 60)
   
-  # ADDED: Weekend Highlighting (Assuming Time 0 is a Monday 00:00)
-  # Weekends start Friday at 24:00 (Hour 120) and end Sunday at 24:00 (Hour 168)
   max_hrs <- max(lifespans$end, na.rm = TRUE)
+  
+  weekend_starts <- seq(120, max_hrs, by = 168)
   weekends <- data.frame(
-    xmin = seq(120, max_hrs + 168, by = 168),
-    xmax = seq(168, max_hrs + 168, by = 168)
+    xmin = weekend_starts,
+    xmax = weekend_starts + 48
   ) %>% filter(xmin <= max_hrs)
   
   ggplot() +
-    # Weekend blocks
     geom_rect(data = weekends, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
               fill = "grey90", alpha = 0.6, inherit.aes = FALSE) +
     geom_segment(data = lifespans, aes(x = start, xend = end, y = patient_id, yend = patient_id, color = final_attendance),
@@ -322,7 +332,19 @@ calculate_simulation_power <- function(target_weeks, iterations = 100, target_ef
 }
 
 
-plot_recovered_parameters <- function(pp_model_results) {
+plot_recovered_parameters <- function(
+    pp_model_results, 
+    rr_tier2_passive  = 0.90, 
+    rr_tier2_interact = 0.85, 
+    rr_tier3_call     = 0.40,
+    rr_tier1          = 0.95
+) {
+  
+  # Calculate the true relative ratios expected by the GLM offset design:
+  # - Tier 2 is relative to the Control group (Passive Reminder)
+  # - Tier 3 cumulative effect includes Tier 1 * Tier 2 Interact * Tier 3 Call, relative to Control (Tier 1 * Tier 2 Passive)
+  true_rr_tier2 <- rr_tier2_interact / rr_tier2_passive
+  true_rr_tier3 <- (rr_tier1 * rr_tier2_interact * rr_tier3_call) / (rr_tier1 * rr_tier2_passive)
   
   plot_data <- tidy(pp_model_results) %>%
     filter(term %in% c("pp_exposure2_Tier2_Interactive_Only", "pp_exposure3_Tier3_Call_Reached")) %>%
@@ -336,12 +358,12 @@ plot_recovered_parameters <- function(pp_model_results) {
         grepl("Tier3", term) ~ "Tier 3 Impacts"
       ),
       True_Parameter = case_when(
-        grepl("Tier2", term) ~ 0.85, # Relative to Tier 2 Passive (0.90)
-        grepl("Tier3", term) ~ 0.40
+        grepl("Tier2", term) ~ true_rr_tier2,
+        grepl("Tier3", term) ~ true_rr_tier3
       ),
       Term_Label = case_when(
-        grepl("Tier2", term) ~ "Interactive Gate vs Passive Reminder\n(True RR = 0.85)",
-        grepl("Tier3", term) ~ "Coordinator Call vs Text Only\n(True RR = 0.40)"
+        grepl("Tier2", term) ~ paste0("Interactive gate vs passive reminder\n(true RR = ", round(true_rr_tier2, 3), ")"),
+        grepl("Tier3", term) ~ paste0("Coordinator call vs text only\n(true RR = ", round(true_rr_tier3, 3), ")")
       )
     )
   
@@ -351,11 +373,11 @@ plot_recovered_parameters <- function(pp_model_results) {
     geom_point(aes(x = True_Parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     facet_grid(Tier ~ ., scales = "free_y", space = "free_y") +
-    scale_x_continuous(limits = c(0.2, 1.2), breaks = seq(0.2, 1.2, 0.2)) +
+    # scale_x_continuous(limits = c(0.2, 1.2), breaks = seq(0.2, 1.2, 0.2)) +
     labs(
-      title = "Validation of Pathway Component Effect Sizes",
-      subtitle = "Red diamonds represent programmed ground truth. Black ranges are recovered 95% CIs.",
-      x = "Recovered Risk Ratio (RR)", y = ""
+      title = "Validation of pathway component effect sizes",
+      subtitle = "Red diamonds represent programmed relative ground truth. Black ranges are recovered 95% CIs.",
+      x = "Recovered risk ratio (RR)", y = ""
     ) +
     theme_minimal(base_size = 14) +
     theme(
@@ -381,19 +403,16 @@ analyze_pathway_volumes <- function(trial_data) {
 
 plot_transition_time_distributions <- function(trial_data) {
   
-  # Calculate time deltas (in hours) between sequential stages
   transition_data <- trial_data %>%
+    filter(!final_attendance %in% c("Censored", "Cancelled")) %>%
     mutate(
-      # Time from List Extraction to Tier 1 Text
-      dur_list_to_t1 = (tier1_text_time - arrival_time) / 60,
-      # Time from Tier 1 Text to Tier 2 Text/Gate
-      dur_t1_to_t2 = (tier2_text_time - tier1_text_time) / 60,
-      # Time from Tier 2 Text to Coordinator Call (for those reached)
-      dur_t2_to_call = ifelse(intervened_by_phone == TRUE, (call_time - tier2_text_time) / 60, NA_real_),
-      # Time from Call to Appointment
+      # Calculate true forward operational latencies (in hours)
+      dur_entry_to_t1 = (tier1_text_time - arrival_time) / 60,
+      dur_t1_to_t2    = (tier2_text_time - tier1_text_time) / 60,
+      dur_t2_to_call  = ifelse(intervened_by_phone == TRUE, (call_time - tier2_text_time) / 60, NA_real_),
       dur_call_to_appt = ifelse(intervened_by_phone == TRUE, (appt_time - call_time) / 60, (appt_time - tier2_text_time) / 60)
     ) %>%
-    dplyr::select(patient_id, trial_arm, dur_list_to_t1, dur_t1_to_t2, dur_t2_to_call) %>%
+    dplyr::select(patient_id, trial_arm, dur_entry_to_t1, dur_t1_to_t2, dur_t2_to_call, dur_call_to_appt) %>%
     pivot_longer(
       cols = starts_with("dur_"),
       names_to = "Transition_Stage",
@@ -402,15 +421,15 @@ plot_transition_time_distributions <- function(trial_data) {
     filter(!is.na(Hours) & Hours >= 0) %>%
     mutate(
       Stage_Label = case_when(
-        Transition_Stage == "dur_list_to_t1" ~ "1. List Extraction -> Tier 1 Text",
-        Transition_Stage == "dur_t1_to_t2" ~ "2. Tier 1 Text -> Tier 2 Touchpoint",
-        Transition_Stage == "dur_t2_to_call" ~ "3. Tier 2 Touchpoint -> Coordinator Call"
+        Transition_Stage == "dur_entry_to_t1"  ~ "1. Trial Entry -> Tier 1 Text",
+        Transition_Stage == "dur_t1_to_t2"     ~ "2. Tier 1 Text -> Tier 2 Touchpoint",
+        Transition_Stage == "dur_t2_to_call"   ~ "3. Tier 2 Touchpoint -> Coordinator Call",
+        Transition_Stage == "dur_call_to_appt" ~ "4. Final Action -> Appointment"
       )
     )
   
-  # Plot density distributions faceted by transition stage and trial arm
   ggplot(transition_data, aes(x = Hours, fill = trial_arm)) +
-    geom_density(alpha = 0.5, color = NA) +
+    geom_density(alpha = 0.5, color = NA, adjust = 1.5) +
     facet_wrap(~ Stage_Label, scales = "free") +
     labs(
       title = "Distribution of Transition Times Between Pathway Stages",
@@ -423,7 +442,8 @@ plot_transition_time_distributions <- function(trial_data) {
     theme(
       panel.grid.minor = element_blank(),
       legend.position = "bottom",
-      plot.title = element_text(face = "bold")
+      plot.text = element_text(face = "bold"),
+      strip.text = element_text(face = "bold", size = 11)
     )
 }
 
@@ -742,3 +762,241 @@ plot_branch_latency_bars <- function(trial_data) {
       legend.position = "bottom"
     )
 }
+
+
+plot_empirical_tracemap_static <- function(trial_data) {
+  
+  # Clean up the long pathway labels so they fit on the plot
+  flow_data <- trial_data %>%
+    mutate(
+      path_clean = str_replace_all(pathway_outcome, "Intervention Arm: |Standard ", ""),
+      path_clean = str_wrap(path_clean, width = 15)
+    ) %>%
+    count(risk_profile, trial_arm, path_clean, final_attendance, name = "Volume")
+  
+  ggplot(flow_data,
+         aes(y = Volume, 
+             axis1 = risk_profile, 
+             axis2 = trial_arm, 
+             axis3 = path_clean, 
+             axis4 = final_attendance)) +
+    geom_alluvium(aes(fill = final_attendance), width = 1/8, alpha = 0.7, color = "white") +
+    geom_stratum(width = 1/4, fill = "grey90", color = "darkgray") +
+    geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3.5, fontface = "bold") +
+    scale_x_discrete(limits = c("Risk Profile", "Trial Arm", "Pathway Outcome", "Final Attendance"), 
+                     expand = c(0.1, 0.1)) +
+    scale_fill_manual(values = c("Attended" = "#66c2a5", "DNA" = "#fc8d62", 
+                                 "Cancelled" = "#8da0cb", "Censored" = "grey60")) +
+    theme_minimal(base_size = 14) +
+    labs(title = "Empirical Patient Flow Trace",
+         subtitle = "Trace map generated directly from simulated volumes",
+         y = "Number of Patients", x = "") +
+    theme(panel.grid = element_blank(), legend.position = "bottom")
+}
+
+
+
+generate_trial_process_suite <- function(trial_data) {
+  
+  # =========================================================================
+  # 1. BUILD THE EVENT LOG
+  # =========================================================================
+  event_data <- trial_data %>%
+    # Filter to actual trial participants to keep the visuals focused
+    filter(trial_arm != "Not in Trial") %>% 
+    dplyr::select(patient_id, trial_arm, risk_profile, sms_tier2_type, final_attendance,
+           arrival_time, tier1_text_time, tier2_text_time, call_time, appt_time) %>%
+    
+    pivot_longer(
+      cols = c(arrival_time, tier1_text_time, tier2_text_time, call_time, appt_time),
+      names_to = "milestone",
+      values_to = "time_mins",
+      values_drop_na = TRUE
+    ) %>%
+    mutate(
+      activity = case_when(
+        milestone == "arrival_time"    ~ "1. Trial Entry",
+        milestone == "tier1_text_time" ~ "2. Tier 1 Auto-SMS",
+        milestone == "tier2_text_time" ~ paste0("3. Tier 2: ", sms_tier2_type),
+        milestone == "call_time"       ~ "4. Coordinator Call",
+        milestone == "appt_time"       ~ paste0("5. Outcome: ", final_attendance)
+      ),
+      # Convert simulation minutes to valid timestamps
+      timestamp = as.POSIXct("2024-01-01 08:00:00") + (time_mins * 60),
+      status = "complete",
+      resource = "Clinic System",
+      activity_instance = row_number()
+    ) %>%
+    arrange(patient_id, timestamp) %>%
+    dplyr::select(patient_id, activity, timestamp, status, resource, activity_instance, trial_arm)
+  
+  trial_eventlog <- event_data %>%
+    eventlog(
+      case_id = "patient_id",
+      activity_id = "activity",
+      activity_instance_id = "activity_instance",
+      lifecycle_id = "status",
+      timestamp = "timestamp",
+      resource_id = "resource"
+    )
+  
+  # =========================================================================
+  # 2. GENERATE THE CHARTS
+  # =========================================================================
+  
+  # Chart 1: Frequency Trace Map (Patient Volumes)
+  freq_map <- trial_eventlog %>% process_map(frequency("absolute"))
+  
+  # Chart 2: Performance Trace Map (Bottlenecks / Queue Delays)
+  perf_map <- trial_eventlog %>% process_map(performance(mean, "hours"))
+  
+  # Chart 3: Trace Explorer (Visualizes every unique pathway permutation)
+  # coverage = 1.0 means it will plot 100% of the variations in the data
+  trace_exp <- trial_eventlog %>% trace_explorer(coverage = 1.0)
+  
+  # Chart 4: Animated Patient Flow
+  # We color the tokens based on their trial arm so you can watch them diverge!
+  animation_abs <- trial_eventlog %>%
+    animate_process(
+      mode = "absolute",
+      mapping = token_aes(color = token_scale("trial_arm", 
+                                              scale = "ordinal", 
+                                              range = c("#3498db", "#e74c3c")))
+    )
+  animation_rel <- trial_eventlog %>%
+    animate_process(
+      mode = "relative",
+      mapping = token_aes(color = token_scale("trial_arm", 
+                                              scale = "ordinal", 
+                                              range = c("#3498db", "#e74c3c")))
+    )
+  
+  
+  # =========================================================================
+  # 3. RETURN AS NAMED LIST
+  # =========================================================================
+  return(list(
+    event_log = trial_eventlog,
+    freq_map = freq_map,
+    perf_map = perf_map,
+    trace_exp = trace_exp,
+    animation_abs = animation_abs,
+    animation_rel = animation_rel
+  ))
+}
+
+
+# =========================================================================
+# SECTION 4: MONTE CARLO PARAMETER STABILITY LOOP
+# =========================================================================
+
+run_stability_test <- function(iterations = 100, weeks_to_simulate = 26) {
+  
+  # Set your known ground-truth targets
+  true_rr_tier2 <- 0.85 / 0.90 # Interactive (0.85) vs Passive Control (0.90)
+  true_rr_tier3 <- (0.95 * 0.85 * 0.40) / (0.95 * 0.90) # Cumulative Tier 3 vs Control
+  
+  map_dfr(1:iterations, function(i) {
+    # 1. Simulate a fresh trial dataset
+    trial_data <- simulate_clinical_trial_advanced(weeks_to_simulate = weeks_to_simulate)
+    
+    # 2. Clean and build evaluation variables
+    analysis_data <- trial_data %>%
+      filter(!final_attendance %in% c("Censored", "Cancelled")) %>%
+      mutate(
+        dna_outcome = ifelse(final_attendance == "DNA", 1, 0),
+        trial_arm = factor(trial_arm, levels = c("Control", "Intervention", "Not in Trial"))
+      )
+    
+    high_risk_trial_cohorts <- analysis_data %>% 
+      filter(trial_arm != "Not in Trial") %>%
+      mutate(
+        pp_exposure = case_when(
+          trial_arm == "Control" ~ "1_Control", 
+          trial_arm == "Intervention" & intervened_by_phone == FALSE & final_attendance != "Censored" ~ "2_Tier2_Interactive_Only",
+          trial_arm == "Intervention" & intervened_by_phone == TRUE ~ "3_Tier3_Call_Reached",
+          TRUE ~ NA_character_
+        )
+      ) %>%
+      filter(!is.na(pp_exposure)) %>%
+      mutate(
+        pp_exposure = factor(pp_exposure, levels = c("1_Control", "2_Tier2_Interactive_Only", "3_Tier3_Call_Reached"))
+      )
+    
+    # Safely fit the model (handles rare edge-case convergence warnings gracefully)
+    model_fit <- tryCatch({
+      glm(dna_outcome ~ pp_exposure + offset(log(ml_baseline_risk)),
+          data = high_risk_trial_cohorts, family = poisson(link = "log"))
+    }, error = function(e) { NULL })
+    
+    if (is.null(model_fit)) return(NULL)
+    
+    res <- coeftest(model_fit, vcov = sandwich)
+    
+    # Extract coefficients
+    tibble(
+      iteration = i,
+      term = rownames(res),
+      estimate = res[, "Estimate"],
+      std_error = res[, "Std. Error"]
+    )
+  }) %>%
+    mutate(
+      Risk_Ratio = exp(estimate),
+      Target_RR = case_when(
+        grepl("Tier2", term) ~ true_rr_tier2,
+        grepl("Tier3", term) ~ true_rr_tier3,
+        TRUE ~ NA_real_
+      )
+    )
+}
+
+plot_stability_forest <- function(stability_results) {
+  
+  # 1. Calculate Summary Data for the Forest Plot
+  summary_data <- stability_results %>%
+    filter(!is.na(Target_RR)) %>%
+    group_by(term) %>%
+    summarise(
+      Mean_Recovered_RR = mean(Risk_Ratio),
+      # Calculate empirical 95% bounds based on the Monte Carlo distribution
+      Conf_Low = quantile(Risk_Ratio, 0.025), 
+      Conf_High = quantile(Risk_Ratio, 0.975), 
+      Target_RR = first(Target_RR),
+      .groups = "drop"
+    )
+  
+  # 2. Build the Forest Plot
+  p <- ggplot(summary_data, aes(y = term)) +
+    
+    # Ground-Truth Reference Lines
+    geom_vline(aes(xintercept = Target_RR, color = term), 
+               linetype = "dashed", linewidth = 1, alpha = 0.6) +
+    
+    # Recovered Point Estimates and 95% Simulation Intervals
+    geom_pointrange(aes(x = Mean_Recovered_RR, 
+                        xmin = Conf_Low, 
+                        xmax = Conf_High, 
+                        color = term),
+                    size = 1.2, linewidth = 1.2) +
+    
+    # Safely constrain view without dropping wide Tier 3 intervals
+    coord_cartesian(xlim = c(0.2, 1.2)) +
+    
+    labs(
+      title = "Parameter stability: validation forest plot",
+      subtitle = "Points represent mean recovered risk ratios with 95% simulation intervals.\nDashed lines indicate programmed ground-truth targets.",
+      x = "Risk Ratio",
+      y = "Exposure term"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = "none",
+      panel.grid.minor = element_blank(),
+      axis.text.y = element_text(face = "bold")
+    )
+  
+  return(p)
+}
+plot_stability_forest(stability_results)
+

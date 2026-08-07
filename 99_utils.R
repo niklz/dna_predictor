@@ -13,8 +13,10 @@ simulate_clinical_trial_advanced <- function(
     # Coordinator Constraints (Applies ONLY to High-Risk Intervention)
     coordinator_capacity = 1,
     max_calls_per_week = 100,
-    response_prob = 0.30,
-    prob_wish_to_cancel = 0.20,
+    
+    # BASELINE Behavioral probabilities (These are now just starting points)
+    base_response_prob = 0.30, 
+    base_prob_wish_to_cancel = 0.20,
     
     # INCREMENTAL EFFECT SIZES (Risk Ratios)
     rr_tier1          = 0.95,  
@@ -49,7 +51,7 @@ simulate_clinical_trial_advanced <- function(
       )
     )
   
-  # Split cleanly into Intervention vs Non-Intervention (Control + Low-Risk)
+  # Split cleanly into Intervention vs Non-Intervention
   intervention_df <- trial_manifest %>% filter(trial_arm == "Intervention") %>% mutate(sim_idx = row_number())
   standard_df <- trial_manifest %>% filter(trial_arm != "Intervention") %>% mutate(sim_idx = row_number())
   
@@ -64,13 +66,11 @@ simulate_clinical_trial_advanced <- function(
     set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
     set_attribute("appt_time", function() { simmer::now(env) + (get_attribute(env, "days_until_appt") * mins_per_day) }) %>%
     
-    # FIX 1: Prevent Tier 1 from time-traveling before trial entry
     set_attribute("tier1_text_time", function() { 
       base_t1 <- get_attribute(env, "appt_time") - (7 * mins_per_day) + rnorm(1, 0, 120)
       max(simmer::now(env), base_t1) 
     }) %>%
     
-    # FIX 2: Physically advance the clock before sending Tier 2
     timeout(function() { 
       target_t2 <- get_attribute(env, "appt_time") - (3 * mins_per_day) + rnorm(1, 0, 60)
       max(0, target_t2 - simmer::now(env)) 
@@ -86,36 +86,52 @@ simulate_clinical_trial_advanced <- function(
         response_t <- curr_t + delay_mins
         cutoff_t <- appt_t - mins_per_day 
         
-        did_respond <- rbinom(1, 1, response_prob)
+        patient_name <- simmer::get_name(env)
+        current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
+        patient_risk <- intervention_df$ml_baseline_risk[current_idx]
         
-        if (did_respond == 0 || response_t > cutoff_t) { return(3) }
-        return(sample(c(1, 2), size = 1, prob = c(0.70, 0.30))) 
+        # 1. Dynamic Response Probability
+        dyn_response_prob <- base_response_prob * (1.5 * (1 - patient_risk))
+        dyn_response_prob <- pmin(0.85, pmax(0.05, dyn_response_prob)) 
+        
+        did_respond <- rbinom(1, 1, dyn_response_prob)
+        if (did_respond == 0 || response_t > cutoff_t) { return(3) } # Defaults to No-Response
+        
+        # 2. Fence-Sitter Nudge for Cancellations
+        fence_sitter_multiplier <- 4 * (patient_risk * (1 - patient_risk))
+        dyn_cancel_prob <- 0.15 + (0.45 * fence_sitter_multiplier) 
+        dyn_cancel_prob <- pmin(0.8, pmax(0.05, dyn_cancel_prob))
+        
+        return(sample(c(1, 2), size = 1, prob = c(1 - dyn_cancel_prob, dyn_cancel_prob))) 
       },
       continue = c(TRUE, TRUE, TRUE),
       
+      # Route 1: Confirm via text (No coordinator needed, immediate resolution)
       trajectory("Intent_Confirm") %>%
         set_attribute("response_type", 1) %>%
         set_attribute("outcome_status", 2),
       
+      # Route 2: Text requested cancellation -> MUST hit the coordinator queue to process
       trajectory("Intent_Reschedule_Cancel") %>%
         set_attribute("response_type", 2) %>%
-        # FIX 3a: Wait out the response delay before hitting the queue
         timeout(function() { get_attribute(env, "response_delay_hours") * 60 }) %>%
+        # Hard cutoff: Must be processed before 24 hours prior to appointment
         renege_in(
           t = function() { max(0, get_attribute(env, "appt_time") - simmer::now(env)) },
-          out = trajectory() %>% set_attribute("outcome_status", 0) 
+          out = trajectory() %>% set_attribute("outcome_status", 0) # Missed / Timeout
         ) %>%
         seize("coordinator", 1) %>%
         renege_abort() %>% 
         set_attribute("call_time", function() { simmer::now(env) }) %>%
         timeout(function() { max(5, rnorm(1, mean = mean_handling_time, sd = 5)) }) %>%
+        # Since they explicitly asked to cancel via text, probability of confirming cancel during call is near 100%
         set_attribute("wants_to_cancel", 1) %>% 
         release("coordinator", 1) %>%
         set_attribute("outcome_status", 1),
       
+      # Route 3: No Response -> Coordinator chases them
       trajectory("Intent_No_Response") %>%
         set_attribute("response_type", 3) %>%
-        # FIX 3b: Wait until exactly the 24-hour cutoff before triggering chase
         timeout(function() { 
           max(0, get_attribute(env, "appt_time") - mins_per_day - simmer::now(env)) 
         }) %>%
@@ -126,13 +142,21 @@ simulate_clinical_trial_advanced <- function(
         seize("coordinator", 1) %>%
         renege_abort() %>% 
         set_attribute("call_time", function() { simmer::now(env) }) %>%
-        timeout(function() { max(5, rnorm(1, mean = mean_handling_time, sd = 5)) }) %>%
-        set_attribute("wants_to_cancel", function() { rbinom(1, 1, prob_wish_to_cancel) }) %>%
+        # Standard coordinator call (might want to cancel or might not)
+        set_attribute("wants_to_cancel", function() { 
+          patient_name <- simmer::get_name(env)
+          current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
+          patient_risk <- intervention_df$ml_baseline_risk[current_idx]
+          fence_sitter_multiplier <- 4 * (patient_risk * (1 - patient_risk))
+          dyn_cancel_prob <- base_prob_wish_to_cancel + (0.35 * fence_sitter_multiplier)
+          dyn_cancel_prob <- pmin(0.8, pmax(0.05, dyn_cancel_prob))
+          return(rbinom(1, 1, dyn_cancel_prob)) 
+        }) %>%
         release("coordinator", 1) %>%
         set_attribute("outcome_status", 1)
     )
   
-  # Ensure standard paths adhere to chronological limits as well
+  # Standard Care Journey (Remains functionally identical)
   standard_path <- trajectory("Standard_Care_Journey") %>%
     set_attribute("arrival_time", function() { simmer::now(env) }) %>%
     set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
@@ -143,7 +167,7 @@ simulate_clinical_trial_advanced <- function(
     }) %>%
     set_attribute("tier2_text_time", function() { 
       base_t2 <- get_attribute(env, "appt_time") - (3 * mins_per_day) + rnorm(1, 0, 60)
-      max(get_attribute(env, "tier1_text_time"), base_t2) # Must happen after Tier 1
+      max(get_attribute(env, "tier1_text_time"), base_t2) 
     })
   
   working_hours <- schedule(timetable = c(0, 9*60, 17*60), values = c(0, coordinator_capacity, 0), period = mins_per_day)
@@ -154,6 +178,9 @@ simulate_clinical_trial_advanced <- function(
     add_generator("Standard_", standard_path, at(standard_arrivals), mon = 2) %>%
     run(until = total_sim_time)
   
+  # =========================================================================
+  # DATA CLEANING AND MANIFEST JOINING
+  # =========================================================================
   sim_arrivals <- get_mon_arrivals(env) %>% 
     mutate(
       arm_group = sub("_.*", "", name),
@@ -207,18 +234,26 @@ simulate_clinical_trial_advanced <- function(
       ),
       
       modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * ifelse(sms_tier2_type == "Passive Reminder", rr_tier2_passive, rr_tier2_interact) * ifelse(pathway_outcome == "Intervention Arm: Confirmed via Coordinator", rr_tier3_call, 1),
-      
       modulated_dna_prob = pmin(1, pmax(0, modulated_dna_prob)),
+      
+      # FIX: Give the rest of the cohort a natural baseline chance to cancel
+      natural_cancel_prob = 0.15 * (1 - ml_baseline_risk),
       
       final_attendance = case_when(
         pathway_outcome %in% c("Simulation Truncated", "Intervention Arm: Pending in Queue", "Intervention Arm: Missed (Queue Timeout)") ~ "Censored",
+        
+        # 1. The Intervention-driven cancellations
         pathway_outcome == "Intervention Arm: Cancelled via Coordinator" ~ "Cancelled",
+        
+        # 2. THE FIX: The natural baseline cancellations (for Control / Missed / BAU)
+        runif(n()) < natural_cancel_prob ~ "Cancelled",
+        
+        # 3. DNAs and Attends
         runif(n()) < modulated_dna_prob ~ "DNA",
         TRUE ~ "Attended"
       )
     )
   
-  # Final Dataset - Preserving all columns required for mapping
   sop_dataset <- final_trial_dataset %>%
     dplyr::select(
       patient_id, trial_arm, risk_profile, ml_baseline_risk,       

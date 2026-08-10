@@ -9,6 +9,7 @@ library(lmtest)
 library(broom)
 library(dplyr)
 library(purrr)
+library(patchwork)
 
 source("99_utils.R")
 
@@ -23,7 +24,6 @@ plot_trial_journeys(trial_data)
 process_diags <- generate_trial_process_suite(trial_data)
 flow_volumes <- analyze_pathway_volumes(trial_data)
 plot_transition_time_distributions(trial_data)
-
 
 # =========================================================================
 # SECTION 2: CLINICAL TRIAL EVALUATION SUITE
@@ -56,7 +56,6 @@ analysis_data <- trial_data %>%
     pp_exposure = factor(pp_exposure, levels = c("1_Control", "2_Tier2_Interactive_Only", "3_Tier3_Call_Reached"))
   )
 
-
 # -------------------------------------------------------------------------
 # MODEL 1: Advance Cancellations (Intent-To-Treat / Arm-Level)
 # -------------------------------------------------------------------------
@@ -68,7 +67,6 @@ cancel_fit <- glm(cancellation_outcome ~ trial_arm + ml_baseline_risk,
                   data = cancel_analysis_data, 
                   family = poisson(link = "log"))
 cancel_model_results <- coeftest(cancel_fit, vcov = sandwich)
-
 
 # -------------------------------------------------------------------------
 # MODEL 2: Wasted Capacity / DNAs (Per-Protocol)
@@ -82,20 +80,22 @@ pp_wasted_fit <- glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk,
                      family = poisson(link = "log"))
 wasted_model_results <- coeftest(pp_wasted_fit, vcov = sandwich)
 
-
 # -------------------------------------------------------------------------
 # Print Key Recovered Estimates
 # -------------------------------------------------------------------------
-print("--- MODEL 1: ADVANCE CANCELLATION (ITT) ---")
+print("--- Model 1: advance cancellation (ITT) ---")
 print(exp(cancel_model_results[, "Estimate"]))
 
-print("--- MODEL 2: WASTED SLOT / DNA (PP) ---")
+print("--- Model 2: wasted slot / DNA (PP) ---")
 print(exp(wasted_model_results[, "Estimate"]))
 
 # Validation Plotting
-plot_clean_dual_patchwork(cancel_model_results, wasted_model_results, true_rr_cancel = 1.25) # Note: Make sure 1.25 matches your simulation default!
+plot_clean_dual_patchwork(cancel_model_results, wasted_model_results, true_rr_cancel = 1.25)
 
 
-# Run the stability test (optional, uncomment to execute)
-stability_results <- run_stability_test_dual(iterations = 25)
+# =========================================================================
+# SECTION 3: MONTE CARLO STABILITY
+# =========================================================================
+# Run the dual stability test loop
+stability_results <- run_stability_test_dual(iterations = 50)
 plot_stability_dual_patchwork(stability_results)

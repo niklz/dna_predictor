@@ -96,51 +96,6 @@ print(exp(wasted_model_results[, "Estimate"]))
 plot_clean_dual_patchwork(cancel_model_results, wasted_model_results, true_rr_cancel = 1.25) # Note: Make sure 1.25 matches your simulation default!
 
 
-# =========================================================================
-# SECTION 3: MONTE CARLO PARAMETER STABILITY LOOP
-# =========================================================================
-
-run_stability_test <- function(iterations = 50, weeks_to_simulate = 26) {
-  
-  map_dfr(1:iterations, function(i) {
-    # 1. Simulate fresh trial
-    iter_data <- simulate_clinical_trial_advanced(weeks_to_simulate = weeks_to_simulate)
-    
-    # 2. Base Data Prep
-    iter_analysis <- iter_data %>%
-      filter(final_attendance != "Censored") %>%
-      mutate(
-        wasted_slot_outcome = ifelse(final_attendance == "DNA", 1, 0),
-        cancellation_outcome = ifelse(final_attendance == "Cancelled", 1, 0),
-        trial_arm = factor(trial_arm, levels = c("Control", "Intervention")),
-        pp_exposure = factor(case_when(
-          trial_arm == "Control" ~ "1_Control", 
-          trial_arm == "Intervention" & intervened_by_phone == FALSE ~ "2_Tier2_Interactive_Only",
-          trial_arm == "Intervention" & intervened_by_phone == TRUE ~ "3_Tier3_Call_Reached"
-        ), levels = c("1_Control", "2_Tier2_Interactive_Only", "3_Tier3_Call_Reached"))
-      )
-    
-    # 3. ITT Cancellation Model
-    cancel_fit <- glm(cancellation_outcome ~ trial_arm + ml_baseline_risk, 
-                      data = filter(iter_analysis, trial_arm %in% c("Control", "Intervention")), 
-                      family = poisson(link = "log"))
-    cancel_res <- coeftest(cancel_fit, vcov = sandwich)
-    
-    # 4. PP DNA Model
-    dna_fit <- glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk, 
-                   data = filter(iter_analysis, trial_arm %in% c("Control", "Intervention") & final_attendance != "Cancelled"), 
-                   family = poisson(link = "log"))
-    dna_res <- coeftest(dna_fit, vcov = sandwich)
-    
-    # Extract Estimates cleanly
-    tibble(
-      Iteration = i,
-      Cancel_ITT_Effect = exp(cancel_res["trial_armIntervention", "Estimate"]),
-      DNA_Tier2_Effect  = exp(dna_res["pp_exposure2_Tier2_Interactive_Only", "Estimate"]),
-      DNA_Tier3_Effect  = exp(dna_res["pp_exposure3_Tier3_Call_Reached", "Estimate"])
-    )
-  })
-}
-
 # Run the stability test (optional, uncomment to execute)
-# stability_results <- run_stability_test(iterations = 50, weeks_to_simulate = 26)
+stability_results <- run_stability_test_dual(iterations = 25)
+plot_stability_dual_patchwork(stability_results)

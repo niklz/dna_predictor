@@ -1048,7 +1048,7 @@ plot_clean_dual_patchwork <- function(
       Conf_High  = exp(estimate + 1.96 * std.error),
       Tier = "Intervention Arm Effect",
       True_Parameter = true_rr_cancel,
-      Term_Label = paste0("Intervention vs Control\n(True RR = ", round(true_rr_cancel, 3), ")")
+      Term_Label = paste0("Intervention vs control\n(true RR = ", round(true_rr_cancel, 3), ")")
     )
   
   p1 <- ggplot(cancel_plot_data, aes(x = Risk_Ratio, y = Term_Label)) +
@@ -1057,9 +1057,9 @@ plot_clean_dual_patchwork <- function(
     geom_point(aes(x = True_Parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     labs(
-      title = "A. Advance Cancellation Behavior (ITT)",
-      subtitle = "Target: Programmed arm-level cancellation scalar",
-      x = "Recovered Risk Ratio", y = ""
+      title = "Intervention impact on advanced cancellation",
+      # subtitle = "Target: Programmed arm-level cancellation scalar",
+      x = "Recovered risk ratio", y = ""
     ) +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank())
@@ -1080,8 +1080,8 @@ plot_clean_dual_patchwork <- function(
         grepl("Tier3", term) ~ true_rr_tier3_dna
       ),
       Term_Label = case_when(
-        grepl("Tier2", term) ~ paste0("Interactive vs Passive\n(True RR = ", round(true_rr_tier2_dna, 3), ")"),
-        grepl("Tier3", term) ~ paste0("Call vs Text Only\n(True RR = ", round(true_rr_tier3_dna, 3), ")")
+        grepl("Tier2", term) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_rr_tier2_dna, 3), ")"),
+        grepl("Tier3", term) ~ paste0("Call vs text only\n(true RR = ", round(true_rr_tier3_dna, 3), ")")
       )
     )
   
@@ -1092,12 +1092,95 @@ plot_clean_dual_patchwork <- function(
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     facet_grid(Tier ~ ., scales = "free_y", space = "free_y") +
     labs(
-      title = "B. Wasted Capacity Loss (DNAs)",
-      subtitle = "Target: Programmed analytical risk ratios",
-      x = "Recovered Risk Ratio", y = ""
+      title = "Intervention impact on DNA",
+      # subtitle = "Target: Programmed analytical risk ratios",
+      x = "Recovered risk ratio", y = ""
     ) +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank())
   
-  return((p1 / p2) + plot_annotation(title = "Validation of Parameter Recovery"))
+  return((p1 / p2) + plot_layout(heights = c(1/3, 2/3))  + plot_annotation(title = "Validation of parameter recovery"))
+}
+
+
+plot_stability_dual_patchwork <- function(
+    stability_results,
+    true_rr_cancel    = 1.25,           # MATCHES simulation default (1.5)
+    true_rr_tier2_dna = 0.85 / 0.90,  
+    true_rr_tier3_dna = (0.95 * 0.85 * 0.40) / (0.95 * 0.90)
+) {
+  
+  # 1. Calculate Summary Data from the Monte Carlo Loop
+  summary_data <- stability_results %>%
+    group_by(term) %>%
+    summarise(
+      # Calculate on the log scale (estimate) first, then exponentiate
+      Risk_Ratio = exp(mean(estimate, na.rm = TRUE)),
+      
+      # Calculate the 95% CI for each run using robust standard errors, then average them
+      Conf_Low   = exp(mean(estimate - 1.96 * std_error, na.rm = TRUE)), 
+      Conf_High  = exp(mean(estimate + 1.96 * std_error, na.rm = TRUE)), 
+      .groups    = "drop"
+    )
+  
+  # Panel A: Advance Cancellation Behavior (ITT)
+  cancel_plot_data <- summary_data %>%
+    filter(term == "trial_armIntervention") %>%
+    mutate(
+      Tier = "Intervention Arm Effect",
+      True_Parameter = true_rr_cancel,
+      Term_Label = paste0("Intervention vs control\n(true RR = ", round(true_rr_cancel, 3), ")")
+    )
+  
+  p1 <- ggplot(cancel_plot_data, aes(x = Risk_Ratio, y = Term_Label)) +
+    geom_pointrange(aes(xmin = Conf_Low, xmax = Conf_High), 
+                    color = "#2c3e50", size = 0.8, linewidth = 1.2) +
+    geom_point(aes(x = True_Parameter), color = "#e74c3c", size = 4, shape = 18) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
+    labs(
+      title = "Intervention impact on advanced cancellation",
+      x = "Recovered risk ratio", y = ""
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+  
+  # Panel B: Wasted Capacity Loss (DNAs - Per Protocol)
+  wasted_plot_data <- summary_data %>%
+    filter(term %in% c("pp_exposure2_Tier2_Interactive_Only", "pp_exposure3_Tier3_Call_Reached")) %>%
+    mutate(
+      Tier = case_when(
+        grepl("Tier2", term) ~ "Tier 2 Impacts",
+        grepl("Tier3", term) ~ "Tier 3 Impacts"
+      ),
+      True_Parameter = case_when(
+        grepl("Tier2", term) ~ true_rr_tier2_dna,
+        grepl("Tier3", term) ~ true_rr_tier3_dna
+      ),
+      Term_Label = case_when(
+        grepl("Tier2", term) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_rr_tier2_dna, 3), ")"),
+        grepl("Tier3", term) ~ paste0("Call vs text only\n(true RR = ", round(true_rr_tier3_dna, 3), ")")
+      )
+    )
+  
+  p2 <- ggplot(wasted_plot_data, aes(x = Risk_Ratio, y = Term_Label)) +
+    geom_pointrange(aes(xmin = Conf_Low, xmax = Conf_High), 
+                    color = "#2c3e50", size = 0.8, linewidth = 1.2) +
+    geom_point(aes(x = True_Parameter), color = "#e74c3c", size = 4, shape = 18) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
+    # Safely constrain view for the DNA panel without dropping wide Tier 3 intervals
+    coord_cartesian(xlim = c(0.2, 1.2)) + 
+    facet_grid(Tier ~ ., scales = "free_y", space = "free_y") +
+    labs(
+      title = "Intervention impact on DNA",
+      x = "Recovered risk ratio", y = ""
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+  
+  # Combine with patchwork
+  return(
+    (p1 / p2) + 
+      plot_layout(heights = c(1/3, 2/3)) + 
+      plot_annotation(title = "Parameter stability: Validation of parameter recovery")
+  )
 }

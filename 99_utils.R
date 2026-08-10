@@ -456,15 +456,18 @@ plot_clean_dual_patchwork <- function(
 }
 
 
-run_stability_test_dual <- function(iterations = 100, weeks_to_simulate = 26) {
+run_stability <- function(iterations = 100, weeks_to_simulate = 26) {
   
+  # static programmed parameters (per-protocol)
   true_rr_cancel <- 1.25
   true_rr_tier2 <- 0.85 / 0.90 
   true_rr_tier3 <- (0.95 * 0.85 * 0.40) / (0.95 * 0.90) 
   
   map_dfr(1:iterations, function(i) {
+    # 1. simulate
     trial_data <- simulate_clinical_trial_advanced(weeks_to_simulate = weeks_to_simulate)
     
+    # 2. clean and build evaluation variables
     analysis_data <- trial_data %>%
       filter(final_attendance != "censored") %>%
       mutate(
@@ -480,99 +483,144 @@ run_stability_test_dual <- function(iterations = 100, weeks_to_simulate = 26) {
         pp_exposure = factor(pp_exposure, levels = c("control", "tier2_interactive_only", "tier3_call_reached"))
       )
     
+    # 3. DYNAMIC ITT EXPECTATION CALCULATION
+    # empirical proportions for the intervention arm
+    int_prop <- analysis_data %>%
+      filter(trial_arm == "intervention") %>%
+      summarise(
+        p_cancel = mean(final_attendance == "cancelled"),
+        p_tier2  = mean(final_attendance != "cancelled" & intervened_by_phone == FALSE),
+        p_tier3  = mean(final_attendance != "cancelled" & intervened_by_phone == TRUE)
+      )
+    
+    # empirical proportions for the control arm
+    ctrl_prop <- analysis_data %>%
+      filter(trial_arm == "control") %>%
+      summarise(
+        p_cancel = mean(final_attendance == "cancelled"),
+        p_active = mean(final_attendance != "cancelled")
+      )
+    
+    # calculate the emergent weighted average modifier for this specific run
+    eff_numerator   <- (int_prop$p_cancel * 0) + (int_prop$p_tier2 * 0.85) + (int_prop$p_tier3 * (0.85 * 0.40))
+    eff_denominator <- (ctrl_prop$p_cancel * 0) + (ctrl_prop$p_active * 0.90)
+    
+    dynamic_itt_dna <- eff_numerator / eff_denominator
+    
+    # 4. run models
     cancel_data <- analysis_data %>% filter(trial_arm %in% c("control", "intervention"))
-    cancel_fit <- tryCatch({
-      glm(cancellation_outcome ~ trial_arm + ml_baseline_risk, data = cancel_data, family = poisson(link = "log"))
-    }, error = function(e) { NULL })
+    cancel_fit <- tryCatch({ glm(cancellation_outcome ~ trial_arm + ml_baseline_risk, data = cancel_data, family = poisson(link = "log")) }, error = function(e) { NULL })
     cancel_res <- if (!is.null(cancel_fit)) coeftest(cancel_fit, vcov = sandwich) else NULL
     
+    global_dna_data <- analysis_data %>% filter(trial_arm %in% c("control", "intervention"))
+    global_fit <- tryCatch({ glm(wasted_slot_outcome ~ trial_arm + ml_baseline_risk, data = global_dna_data, family = poisson(link = "log")) }, error = function(e) { NULL })
+    global_res <- if (!is.null(global_fit)) coeftest(global_fit, vcov = sandwich) else NULL
+    
     wasted_data <- analysis_data %>% filter(trial_arm %in% c("control", "intervention") & final_attendance != "cancelled")
-    wasted_fit <- tryCatch({
-      glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk, data = wasted_data, family = poisson(link = "log"))
-    }, error = function(e) { NULL })
+    wasted_fit <- tryCatch({ glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk, data = wasted_data, family = poisson(link = "log")) }, error = function(e) { NULL })
     wasted_res <- if (!is.null(wasted_fit)) coeftest(wasted_fit, vcov = sandwich) else NULL
     
+    # 5. bind rows and inject targets directly
     bind_rows(
       if (!is.null(cancel_res)) tibble(
         iteration = i, term = rownames(cancel_res), 
-        estimate = cancel_res[, "Estimate"], std_error = cancel_res[, "Std. Error"], model = "cancellation"
+        estimate = cancel_res[, "Estimate"], std_error = cancel_res[, "Std. Error"], 
+        endpoint = "cancellation", 
+        target_rr = ifelse(term == "trial_armintervention", true_rr_cancel, NA_real_)
       ) else NULL,
+      
+      if (!is.null(global_res)) tibble(
+        iteration = i, term = rownames(global_res), 
+        estimate = global_res[, "Estimate"], std_error = global_res[, "Std. Error"], 
+        endpoint = "global_itt_dna", 
+        target_rr = ifelse(term == "trial_armintervention", dynamic_itt_dna, NA_real_)
+      ) else NULL,
+      
       if (!is.null(wasted_res)) tibble(
         iteration = i, term = rownames(wasted_res), 
-        estimate = wasted_res[, "Estimate"], std_error = wasted_res[, "Std. Error"], model = "wasted_capacity"
+        estimate = wasted_res[, "Estimate"], std_error = wasted_res[, "Std. Error"], 
+        endpoint = "pp_dna",
+        target_rr = case_when(
+          grepl("tier2", term) ~ true_rr_tier2,
+          grepl("tier3", term) ~ true_rr_tier3,
+          TRUE ~ NA_real_
+        )
       ) else NULL
     )
   }) %>%
-    mutate(
-      risk_ratio = exp(estimate),
-      target_rr = case_when(
-        term == "trial_armintervention" ~ true_rr_cancel,
-        grepl("tier2", term) ~ true_rr_tier2,
-        grepl("tier3", term) ~ true_rr_tier3,
-        TRUE ~ NA_real_
-      )
-    )
+    mutate(risk_ratio = exp(estimate))
 }
 
-
-plot_stability_dual_patchwork <- function(
-    stability_results,
-    true_rr_cancel    = 1.25,
-    true_rr_tier2_dna = 0.85 / 0.90,  
-    true_rr_tier3_dna = (0.95 * 0.85 * 0.40) / (0.95 * 0.90)
-) {
+plot_stability <- function(stability_results) {
   
+  # 1. summarize data and extract the targets automatically
   summary_data <- stability_results %>%
-    group_by(term) %>%
+    group_by(endpoint, term) %>%
     summarise(
       risk_ratio = exp(mean(estimate, na.rm = TRUE)),
       conf_low   = exp(mean(estimate - 1.96 * std_error, na.rm = TRUE)), 
       conf_high  = exp(mean(estimate + 1.96 * std_error, na.rm = TRUE)), 
+      true_parameter = mean(target_rr, na.rm = TRUE), # dynamic extraction
       .groups    = "drop"
     )
   
+  # panel 1: advance cancellations (ITT)
   cancel_plot_data <- summary_data %>%
-    filter(term == "trial_armintervention") %>%
-    mutate(
-      tier = "Intervention arm effect",
-      true_parameter = true_rr_cancel,
-      term_label = paste0("Intervention vs control\n(true rr = ", round(true_rr_cancel, 3), ")")
-    )
+    filter(endpoint == "cancellation" & grepl("intervention", tolower(term))) %>%
+    mutate(term_label = paste0("Intervention vs control\n(true RR = ", round(true_parameter, 3), ")"))
   
   p1 <- ggplot(cancel_plot_data, aes(x = risk_ratio, y = term_label)) +
     geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
-    labs(title = "Intervention impact on advanced cancellation", x = "Recovered risk ratio", y = "") +
+    labs(title = "Macro impact: advance cancellations (ITT)", x = "", y = "") +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank())
   
+  # panel 2: global DNA (ITT)
+  global_dna_data <- summary_data %>%
+    filter(endpoint == "global_itt_dna" & grepl("intervention", tolower(term))) %>%
+    mutate(term_label = paste0("Intervention vs control\n(true RR = ", round(true_parameter, 3), ")"))
+  
+  p2 <- ggplot(global_dna_data, aes(x = risk_ratio, y = term_label)) +
+    geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
+    geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
+    coord_cartesian(xlim = c(0.2, 1.2)) + 
+    labs(title = "Global impact: total DNAs (ITT)", x = "", y = "") +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+  
+  # panel 3: mechanism (PP)
   wasted_plot_data <- summary_data %>%
-    filter(term %in% c("pp_exposuretier2_interactive_only", "pp_exposuretier3_call_reached")) %>%
+    filter(endpoint == "pp_dna" & grepl("tier2|tier3", tolower(term))) %>%
     mutate(
       tier = case_when(
-        grepl("tier2", term) ~ "Tier 2 impacts",
-        grepl("tier3", term) ~ "Tier 3 impacts"
-      ),
-      true_parameter = case_when(
-        grepl("tier2", term) ~ true_rr_tier2_dna,
-        grepl("tier3", term) ~ true_rr_tier3_dna
+        grepl("tier2", tolower(term)) ~ "Tier 2 impacts",
+        grepl("tier3", tolower(term)) ~ "Tier 3 impacts"
       ),
       term_label = case_when(
-        grepl("tier2", term) ~ paste0("Interactive text vs passive text\n(true rr = ", round(true_rr_tier2_dna, 3), ")"),
-        grepl("tier3", term) ~ paste0("Call vs text only\n(true rr = ", round(true_rr_tier3_dna, 3), ")")
+        grepl("tier2", tolower(term)) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_parameter, 3), ")"),
+        grepl("tier3", tolower(term)) ~ paste0("Call vs text only\n(true RR = ", round(true_parameter, 3), ")")
       )
     )
   
-  p2 <- ggplot(wasted_plot_data, aes(x = risk_ratio, y = term_label)) +
+  p3 <- ggplot(wasted_plot_data, aes(x = risk_ratio, y = term_label)) +
     geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     coord_cartesian(xlim = c(0.2, 1.2)) + 
     facet_grid(tier ~ ., scales = "free_y", space = "free_y") +
-    labs(title = "Intervention impact on DNA", x = "Recovered risk ratio", y = "") +
+    labs(title = "Operational mechanism: DNAs by exposure (PP)", x = "Recovered risk ratio", y = "") +
     theme_minimal(base_size = 12) +
-    theme(panel.grid.minor = element_blank())
+    theme(panel.grid.minor = element_blank(), strip.text = element_text(face="bold"))
   
-  return((p1 / p2) + plot_layout(heights = c(1/3, 2/3)) + plot_annotation(title = "Parameter stability: validation of parameter recovery"))
+  # combine using patchwork
+  final_plot <- (p2 / p1 / p3) + 
+    plot_layout(heights = c(1, 1, 2)) + 
+    plot_annotation(
+      title = "Evaluation model stability over 100 replications"
+    )
+  
+  return(final_plot)
 }

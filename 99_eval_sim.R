@@ -81,6 +81,21 @@ pp_wasted_fit <- glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk,
 wasted_model_results <- coeftest(pp_wasted_fit, vcov = sandwich)
 
 # -------------------------------------------------------------------------
+# MODEL 3: Global Clinic Capacity / DNAs (Intent-To-Treat / Arm-Level)
+# -------------------------------------------------------------------------
+# Evaluated on EVERYONE randomized. 
+# Here, a "wasted slot" counts both DNAs AND unmanaged late disruptions, 
+# or you specifically model DNA status across the whole arm.
+
+global_itt_data <- analysis_data %>%  
+  filter(trial_arm %in% c("Control", "Intervention"))
+
+itt_wasted_fit <- glm(wasted_slot_outcome ~ trial_arm + ml_baseline_risk, 
+                      data = global_itt_data, 
+                      family = poisson(link = "log"))
+itt_wasted_results <- coeftest(itt_wasted_fit, vcov = sandwich)
+
+# -------------------------------------------------------------------------
 # Print Key Recovered Estimates
 # -------------------------------------------------------------------------
 print("--- Model 1: advance cancellation (ITT) ---")
@@ -97,5 +112,5 @@ plot_clean_dual_patchwork(cancel_model_results, wasted_model_results, true_rr_ca
 # SECTION 3: MONTE CARLO STABILITY
 # =========================================================================
 # Run the dual stability test loop
-stability_results <- run_stability_test_dual(iterations = 50)
-plot_stability_dual_patchwork(stability_results)
+stability_results <- run_stability(iterations = 100)
+plot_stability(stability_results)

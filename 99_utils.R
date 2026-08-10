@@ -19,7 +19,7 @@ simulate_clinical_trial_advanced <- function(
     max_calls_per_week = 100,
     base_response_prob = 0.30, 
     base_prob_cancel = 0.15,
-    rr_tier1         = 0.95,  
+    rr_tier1          = 0.95,  
     rr_tier2_passive  = 0.90,  
     rr_tier2_interact = 0.85,  
     rr_tier3_call     = 0.40,
@@ -37,27 +37,27 @@ simulate_clinical_trial_advanced <- function(
   
   trial_manifest <- data.frame(week = rep(1:num_weeks, times = weekly_total_sizes)) %>%
     mutate(
-      patient_id = paste0("PT_", row_number()),
-      risk_profile = ifelse(runif(n()) < ml_high_risk_prop, "High-Risk", "Low-Risk"),
-      ml_baseline_risk = ifelse(risk_profile == "Low-Risk", 
+      patient_id = paste0("pt_", row_number()),
+      risk_profile = ifelse(runif(n()) < ml_high_risk_prop, "high_risk", "low_risk"),
+      ml_baseline_risk = ifelse(risk_profile == "low_risk", 
                                 rbeta(n(), shape1 = 2, shape2 = 50), 
                                 rbeta(n(), shape1 = 5, shape2 = 20)),
       trial_arm = case_when(
-        risk_profile == "Low-Risk" ~ "Not in Trial",
-        risk_profile == "High-Risk" & runif(n()) < trial_allocation_ratio ~ "Control",
-        TRUE ~ "Intervention"
+        risk_profile == "low_risk" ~ "not_in_trial",
+        risk_profile == "high_risk" & runif(n()) < trial_allocation_ratio ~ "control",
+        TRUE ~ "intervention"
       )
     )
   
-  intervention_df <- trial_manifest %>% filter(trial_arm == "Intervention") %>% mutate(sim_idx = row_number())
-  standard_df <- trial_manifest %>% filter(trial_arm != "Intervention") %>% mutate(sim_idx = row_number())
+  intervention_df <- trial_manifest %>% filter(trial_arm == "intervention") %>% mutate(sim_idx = row_number())
+  standard_df <- trial_manifest %>% filter(trial_arm != "intervention") %>% mutate(sim_idx = row_number())
   
   intervention_arrivals <- (intervention_df$week - 1) * mins_per_week
   standard_arrivals <- (standard_df$week - 1) * mins_per_week
   
   env <- simmer("trial_pathway")
   
-  intervention_path <- trajectory("High_Risk_Intervention_Journey") %>%
+  intervention_path <- trajectory("high_risk_intervention_journey") %>%
     set_attribute("arrival_time", function() { simmer::now(env) }) %>%
     set_attribute("is_intervention_arm", 1) %>%
     set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
@@ -90,13 +90,12 @@ simulate_clinical_trial_advanced <- function(
         did_respond <- rbinom(1, 1, dyn_response_prob)
         if (did_respond == 0 || response_t > cutoff_t) { return(3) } 
         
-        base_cancel_rate <- 0.15
         is_intervention <- get_attribute(env, "is_intervention_arm") == 1 
         
         if (is_intervention) {
-          dyn_cancel_prob <- base_cancel_rate * cancellation_scalar
+          dyn_cancel_prob <- base_prob_cancel * cancellation_scalar
         } else {
-          dyn_cancel_prob <- base_cancel_rate
+          dyn_cancel_prob <- base_prob_cancel
         }
         
         dyn_cancel_prob <- pmin(0.8, pmax(0.01, dyn_cancel_prob))
@@ -104,11 +103,11 @@ simulate_clinical_trial_advanced <- function(
       },
       continue = c(TRUE, TRUE, TRUE),
       
-      trajectory("Intent_Confirm") %>%
+      trajectory("intent_confirm") %>%
         set_attribute("response_type", 1) %>%
         set_attribute("outcome_status", 2),
       
-      trajectory("Intent_Reschedule_Cancel") %>%
+      trajectory("intent_reschedule_cancel") %>%
         set_attribute("response_type", 2) %>%
         timeout(function() { get_attribute(env, "response_delay_hours") * 60 }) %>%
         renege_in(
@@ -123,7 +122,7 @@ simulate_clinical_trial_advanced <- function(
         release("coordinator", 1) %>%
         set_attribute("outcome_status", 1),
       
-      trajectory("Intent_No_Response") %>%
+      trajectory("intent_no_response") %>%
         set_attribute("response_type", 3) %>%
         timeout(function() { 
           max(0, get_attribute(env, "appt_time") - mins_per_day - simmer::now(env)) 
@@ -144,7 +143,7 @@ simulate_clinical_trial_advanced <- function(
         set_attribute("outcome_status", 1)
     )
   
-  standard_path <- trajectory("Standard_Care_Journey") %>%
+  standard_path <- trajectory("standard_care_journey") %>%
     set_attribute("arrival_time", function() { simmer::now(env) }) %>%
     set_attribute("is_intervention_arm", 0) %>%
     set_attribute("days_until_appt", function() { runif(1, min = 4, max = 14) }) %>%
@@ -162,8 +161,8 @@ simulate_clinical_trial_advanced <- function(
   
   env %>%
     add_resource("coordinator", capacity = working_hours) %>%
-    add_generator("Intervention_", intervention_path, at(intervention_arrivals), mon = 2) %>%
-    add_generator("Standard_", standard_path, at(standard_arrivals), mon = 2) %>%
+    add_generator("intervention_", intervention_path, at(intervention_arrivals), mon = 2) %>%
+    add_generator("standard_", standard_path, at(standard_arrivals), mon = 2) %>%
     run(until = total_sim_time)
   
   sim_arrivals <- get_mon_arrivals(env) %>% 
@@ -182,37 +181,37 @@ simulate_clinical_trial_advanced <- function(
   for (col in expected_cols) { if (!col %in% names(sim_processed)) sim_processed[[col]] <- NA_real_ }
   
   intervention_manifest <- intervention_df %>%
-    left_join(sim_processed %>% filter(arm_group == "Intervention"), by = "sim_idx") %>% 
+    left_join(sim_processed %>% filter(arm_group == "intervention"), by = "sim_idx") %>% 
     dplyr::select(-sim_idx, -name, -arm_group) %>% 
-    mutate(outcome_status = replace_na(outcome_status, -1), sms_tier2_type = "Interactive Gate")
+    mutate(outcome_status = replace_na(outcome_status, -1), sms_tier2_type = "interactive_gate")
   
   non_intervention_manifest <- standard_df %>%
-    left_join(sim_processed %>% filter(arm_group == "Standard"), by = "sim_idx") %>%
+    left_join(sim_processed %>% filter(arm_group == "standard"), by = "sim_idx") %>%
     dplyr::select(-sim_idx, -name, -arm_group) %>% 
-    mutate(outcome_status = -2, wants_to_cancel = 0, sms_tier2_type = "Passive Reminder", call_time = NA_real_)
+    mutate(outcome_status = -2, wants_to_cancel = 0, sms_tier2_type = "passive_reminder", call_time = NA_real_)
   
   final_trial_dataset <- bind_rows(intervention_manifest, non_intervention_manifest) %>%
     mutate(
       intervened_by_phone = ifelse(outcome_status == 1, TRUE, FALSE),
       is_truncated = ifelse(appt_time > total_sim_time, TRUE, FALSE),
       pathway_outcome = case_when(
-        is_truncated ~ "Simulation Truncated",
-        outcome_status == -1 ~ "Intervention Arm: Pending in Queue",
-        trial_arm == "Not in Trial" ~ "Standard Low-Risk Track",
-        trial_arm == "Control" ~ "Standard High-Risk Control Track",
-        outcome_status == 0 ~ "Intervention Arm: Missed (Queue Timeout)",
-        outcome_status == 1 ~ "Intervention Arm: Processed by Coordinator", 
-        TRUE ~ "Completed Auto-Text Only"
+        is_truncated ~ "simulation_truncated",
+        outcome_status == -1 ~ "intervention_pending_queue",
+        trial_arm == "not_in_trial" ~ "standard_low_risk_track",
+        trial_arm == "control" ~ "standard_high_risk_control",
+        outcome_status == 0 ~ "intervention_queue_timeout",
+        outcome_status == 1 ~ "intervention_processed_coordinator", 
+        TRUE ~ "completed_auto_text_only"
       ),
-      modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * ifelse(sms_tier2_type == "Passive Reminder", rr_tier2_passive, rr_tier2_interact) * ifelse(pathway_outcome == "Intervention Arm: Processed by Coordinator", rr_tier3_call, 1),
+      modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * ifelse(sms_tier2_type == "passive_reminder", rr_tier2_passive, rr_tier2_interact) * ifelse(pathway_outcome == "intervention_processed_coordinator", rr_tier3_call, 1),
       modulated_dna_prob = pmin(1, pmax(0, modulated_dna_prob)),
-      modulated_cancel_prob = base_prob_cancel * ifelse(trial_arm == "Intervention", cancellation_scalar, 1),
+      modulated_cancel_prob = base_prob_cancel * ifelse(trial_arm == "intervention", cancellation_scalar, 1),
       modulated_cancel_prob = pmin(1, pmax(0, modulated_cancel_prob)),
       final_attendance = case_when(
-        pathway_outcome %in% c("Simulation Truncated", "Intervention Arm: Pending in Queue", "Intervention Arm: Missed (Queue Timeout)") ~ "Censored",
-        runif(n()) < modulated_cancel_prob ~ "Cancelled",
-        runif(n()) < modulated_dna_prob ~ "DNA",
-        TRUE ~ "Attended"
+        pathway_outcome %in% c("simulation_truncated", "intervention_pending_queue", "intervention_queue_timeout") ~ "censored",
+        runif(n()) < modulated_cancel_prob ~ "cancelled",
+        runif(n()) < modulated_dna_prob ~ "dna",
+        TRUE ~ "attended"
       )
     )
   
@@ -233,7 +232,7 @@ simulate_clinical_trial_advanced <- function(
 plot_trial_journeys <- function(trial_data, num_samples_per_group = 3) {
   
   sampled_patients <- trial_data %>%
-    filter(!final_attendance %in% c("Censored", "Cancelled")) %>%
+    filter(!final_attendance %in% c("censored", "cancelled")) %>%
     group_by(trial_arm, final_attendance) %>%
     slice_sample(n = num_samples_per_group, replace = TRUE) %>%
     ungroup() %>%
@@ -245,8 +244,8 @@ plot_trial_journeys <- function(trial_data, num_samples_per_group = 3) {
       patient_id = patient_plot_order, trial_arm,
       list_extraction = arrival_time / 60,
       tier1_automated_text = tier1_text_time / 60,
-      tier2_passive_reminder = ifelse(sms_tier2_type == "Passive Reminder", tier2_text_time / 60, NA_real_),
-      tier2_interactive_gate = ifelse(sms_tier2_type == "Interactive Gate", tier2_text_time / 60, NA_real_),
+      tier2_passive_reminder = ifelse(sms_tier2_type == "passive_reminder", tier2_text_time / 60, NA_real_),
+      tier2_interactive_gate = ifelse(sms_tier2_type == "interactive_gate", tier2_text_time / 60, NA_real_),
       coordinator_call = call_time / 60, 
       appointment = appt_time / 60
     ) %>%
@@ -274,7 +273,7 @@ plot_trial_journeys <- function(trial_data, num_samples_per_group = 3) {
     scale_fill_manual(values = c("list_extraction"="#66c2a5", "tier1_automated_text"="#fc8d62", 
                                  "tier2_passive_reminder"="#8da0cb", "tier2_interactive_gate"="#e78ac3", 
                                  "coordinator_call"="#a6d854", "appointment"="#ffd92f")) +
-    scale_colour_manual(values = c("Attended" = "darkolivegreen3", "DNA" = "coral2")) +
+    scale_colour_manual(values = c("attended" = "darkolivegreen3", "dna" = "coral2")) +
     facet_wrap(~ trial_arm, scales = "free_y", ncol = 1) +
     labs(title = "Patient journey timelines", subtitle = "Grey bands indicate weekends.",
          x = "Time (hours from simulation start)", y = "") +
@@ -296,7 +295,7 @@ analyze_pathway_volumes <- function(trial_data) {
 
 plot_transition_time_distributions <- function(trial_data) {
   transition_data <- trial_data %>%
-    filter(!final_attendance %in% c("Censored", "Cancelled")) %>%
+    filter(!final_attendance %in% c("censored", "cancelled")) %>%
     mutate(
       dur_entry_to_t1 = (tier1_text_time - arrival_time) / 60,
       dur_t1_to_t2    = (tier2_text_time - tier1_text_time) / 60,
@@ -341,7 +340,7 @@ plot_transition_time_distributions <- function(trial_data) {
 
 generate_trial_process_suite <- function(trial_data) {
   event_data <- trial_data %>%
-    filter(trial_arm != "Not in Trial") %>% 
+    filter(trial_arm != "not_in_trial") %>% 
     dplyr::select(patient_id, trial_arm, risk_profile, sms_tier2_type, final_attendance,
                   arrival_time, tier1_text_time, tier2_text_time, call_time, appt_time) %>%
     pivot_longer(
@@ -406,14 +405,14 @@ plot_clean_dual_patchwork <- function(
 ) {
   
   cancel_plot_data <- tidy(cancel_model_results) %>%
-    filter(term == "trial_armIntervention") %>%
+    filter(term == "trial_armintervention") %>%
     mutate(
       risk_ratio = exp(estimate),
       conf_low   = exp(estimate - 1.96 * std.error),
       conf_high  = exp(estimate + 1.96 * std.error),
       tier = "Intervention arm effect",
       true_parameter = true_rr_cancel,
-      term_label = paste0("Intervention vs control\n(true RR = ", round(true_rr_cancel, 3), ")")
+      term_label = paste0("Intervention vs control\n(true rr = ", round(true_rr_cancel, 3), ")")
     )
   
   p1 <- ggplot(cancel_plot_data, aes(x = risk_ratio, y = term_label)) +
@@ -425,22 +424,22 @@ plot_clean_dual_patchwork <- function(
     theme(panel.grid.minor = element_blank())
   
   wasted_plot_data <- tidy(wasted_model_results) %>%
-    filter(term %in% c("pp_exposure2_Tier2_Interactive_Only", "pp_exposure3_Tier3_Call_Reached")) %>%
+    filter(term %in% c("pp_exposuretier2_interactive_only", "pp_exposuretier3_call_reached")) %>%
     mutate(
       risk_ratio = exp(estimate),
       conf_low   = exp(estimate - 1.96 * std.error),
       conf_high  = exp(estimate + 1.96 * std.error),
       tier = case_when(
-        grepl("Tier2", term) ~ "Tier 2 impacts",
-        grepl("Tier3", term) ~ "Tier 3 impacts"
+        grepl("tier2", term) ~ "Tier 2 impacts",
+        grepl("tier3", term) ~ "Tier 3 impacts"
       ),
       true_parameter = case_when(
-        grepl("Tier2", term) ~ true_rr_tier2_dna,
-        grepl("Tier3", term) ~ true_rr_tier3_dna
+        grepl("tier2", term) ~ true_rr_tier2_dna,
+        grepl("tier3", term) ~ true_rr_tier3_dna
       ),
       term_label = case_when(
-        grepl("Tier2", term) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_rr_tier2_dna, 3), ")"),
-        grepl("Tier3", term) ~ paste0("Call vs text only\n(true RR = ", round(true_rr_tier3_dna, 3), ")")
+        grepl("tier2", term) ~ paste0("Interactive text vs passive text\n(true rr = ", round(true_rr_tier2_dna, 3), ")"),
+        grepl("tier3", term) ~ paste0("Call vs text only\n(true rr = ", round(true_rr_tier3_dna, 3), ")")
       )
     )
   
@@ -467,27 +466,27 @@ run_stability_test_dual <- function(iterations = 100, weeks_to_simulate = 26) {
     trial_data <- simulate_clinical_trial_advanced(weeks_to_simulate = weeks_to_simulate)
     
     analysis_data <- trial_data %>%
-      filter(final_attendance != "Censored") %>%
+      filter(final_attendance != "censored") %>%
       mutate(
-        wasted_slot_outcome = ifelse(final_attendance == "DNA", 1, 0),
-        cancellation_outcome = ifelse(final_attendance == "Cancelled", 1, 0),
-        trial_arm = factor(trial_arm, levels = c("Control", "Intervention", "Not in Trial")),
+        wasted_slot_outcome = ifelse(final_attendance == "dna", 1, 0),
+        cancellation_outcome = ifelse(final_attendance == "cancelled", 1, 0),
+        trial_arm = factor(trial_arm, levels = c("control", "intervention", "not_in_trial")),
         pp_exposure = case_when(
-          trial_arm == "Control" ~ "1_Control", 
-          trial_arm == "Intervention" & intervened_by_phone == FALSE ~ "2_Tier2_Interactive_Only",
-          trial_arm == "Intervention" & intervened_by_phone == TRUE ~ "3_Tier3_Call_Reached",
+          trial_arm == "control" ~ "control", 
+          trial_arm == "intervention" & intervened_by_phone == FALSE ~ "tier2_interactive_only",
+          trial_arm == "intervention" & intervened_by_phone == TRUE ~ "tier3_call_reached",
           TRUE ~ NA_character_
         ),
-        pp_exposure = factor(pp_exposure, levels = c("1_Control", "2_Tier2_Interactive_Only", "3_Tier3_Call_Reached"))
+        pp_exposure = factor(pp_exposure, levels = c("control", "tier2_interactive_only", "tier3_call_reached"))
       )
     
-    cancel_data <- analysis_data %>% filter(trial_arm %in% c("Control", "Intervention"))
+    cancel_data <- analysis_data %>% filter(trial_arm %in% c("control", "intervention"))
     cancel_fit <- tryCatch({
       glm(cancellation_outcome ~ trial_arm + ml_baseline_risk, data = cancel_data, family = poisson(link = "log"))
     }, error = function(e) { NULL })
     cancel_res <- if (!is.null(cancel_fit)) coeftest(cancel_fit, vcov = sandwich) else NULL
     
-    wasted_data <- analysis_data %>% filter(trial_arm %in% c("Control", "Intervention") & final_attendance != "Cancelled")
+    wasted_data <- analysis_data %>% filter(trial_arm %in% c("control", "intervention") & final_attendance != "cancelled")
     wasted_fit <- tryCatch({
       glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk, data = wasted_data, family = poisson(link = "log"))
     }, error = function(e) { NULL })
@@ -507,9 +506,9 @@ run_stability_test_dual <- function(iterations = 100, weeks_to_simulate = 26) {
     mutate(
       risk_ratio = exp(estimate),
       target_rr = case_when(
-        term == "trial_armIntervention" ~ true_rr_cancel,
-        grepl("Tier2", term) ~ true_rr_tier2,
-        grepl("Tier3", term) ~ true_rr_tier3,
+        term == "trial_armintervention" ~ true_rr_cancel,
+        grepl("tier2", term) ~ true_rr_tier2,
+        grepl("tier3", term) ~ true_rr_tier3,
         TRUE ~ NA_real_
       )
     )
@@ -533,11 +532,11 @@ plot_stability_dual_patchwork <- function(
     )
   
   cancel_plot_data <- summary_data %>%
-    filter(term == "trial_armIntervention") %>%
+    filter(term == "trial_armintervention") %>%
     mutate(
       tier = "Intervention arm effect",
       true_parameter = true_rr_cancel,
-      term_label = paste0("Intervention vs control\n(true RR = ", round(true_rr_cancel, 3), ")")
+      term_label = paste0("Intervention vs control\n(true rr = ", round(true_rr_cancel, 3), ")")
     )
   
   p1 <- ggplot(cancel_plot_data, aes(x = risk_ratio, y = term_label)) +
@@ -549,19 +548,19 @@ plot_stability_dual_patchwork <- function(
     theme(panel.grid.minor = element_blank())
   
   wasted_plot_data <- summary_data %>%
-    filter(term %in% c("pp_exposure2_Tier2_Interactive_Only", "pp_exposure3_Tier3_Call_Reached")) %>%
+    filter(term %in% c("pp_exposuretier2_interactive_only", "pp_exposuretier3_call_reached")) %>%
     mutate(
       tier = case_when(
-        grepl("Tier2", term) ~ "Tier 2 impacts",
-        grepl("Tier3", term) ~ "Tier 3 impacts"
+        grepl("tier2", term) ~ "Tier 2 impacts",
+        grepl("tier3", term) ~ "Tier 3 impacts"
       ),
       true_parameter = case_when(
-        grepl("Tier2", term) ~ true_rr_tier2_dna,
-        grepl("Tier3", term) ~ true_rr_tier3_dna
+        grepl("tier2", term) ~ true_rr_tier2_dna,
+        grepl("tier3", term) ~ true_rr_tier3_dna
       ),
       term_label = case_when(
-        grepl("Tier2", term) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_rr_tier2_dna, 3), ")"),
-        grepl("Tier3", term) ~ paste0("Call vs text only\n(true RR = ", round(true_rr_tier3_dna, 3), ")")
+        grepl("tier2", term) ~ paste0("Interactive text vs passive text\n(true rr = ", round(true_rr_tier2_dna, 3), ")"),
+        grepl("tier3", term) ~ paste0("Call vs text only\n(true rr = ", round(true_rr_tier3_dna, 3), ")")
       )
     )
   

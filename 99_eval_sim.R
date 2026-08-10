@@ -31,29 +31,29 @@ plot_transition_time_distributions(trial_data)
 
 # Step 1: Base Analysis Dataset (Minimal Set)
 analysis_data <- trial_data %>%
-  # Only remove 'Censored' patients. KEEP 'Cancelled' for the cancellation model.
-  filter(final_attendance != "Censored") %>% 
+  # Only remove 'censored' patients. KEEP 'cancelled' for the cancellation model.
+  filter(final_attendance != "censored") %>% 
   mutate(
     # METRIC 1: Wasted Capacity Outcome
-    wasted_slot_outcome = ifelse(final_attendance == "DNA", 1, 0),
+    wasted_slot_outcome = ifelse(final_attendance == "dna", 1, 0),
     
     # METRIC 2: Cancellation Behavior Outcome
-    cancellation_outcome = ifelse(final_attendance == "Cancelled", 1, 0),
+    cancellation_outcome = ifelse(final_attendance == "cancelled", 1, 0),
     
     # Standard trial setup
-    trial_arm = factor(trial_arm, levels = c("Control", "Intervention", "Not in Trial")),
+    trial_arm = factor(trial_arm, levels = c("control", "intervention", "not_in_trial")),
     
     # Per-Protocol (PP) Component Exposure Routing
     pp_exposure = case_when(
-      trial_arm == "Control" ~ "1_Control", 
-      trial_arm == "Intervention" & intervened_by_phone == FALSE ~ "2_Tier2_Interactive_Only",
-      trial_arm == "Intervention" & intervened_by_phone == TRUE ~ "3_Tier3_Call_Reached",
+      trial_arm == "control" ~ "control", 
+      trial_arm == "intervention" & intervened_by_phone == FALSE ~ "tier2_interactive_only",
+      trial_arm == "intervention" & intervened_by_phone == TRUE ~ "tier3_call_reached",
       TRUE ~ NA_character_
     )
   ) %>%
-  # Convert PP exposure to factor so the regression automatically sets Control as the reference level
+  # Convert PP exposure to factor so the regression automatically sets control as the reference level
   mutate(
-    pp_exposure = factor(pp_exposure, levels = c("1_Control", "2_Tier2_Interactive_Only", "3_Tier3_Call_Reached"))
+    pp_exposure = factor(pp_exposure, levels = c("control", "tier2_interactive_only", "tier3_call_reached"))
   )
 
 # -------------------------------------------------------------------------
@@ -61,7 +61,7 @@ analysis_data <- trial_data %>%
 # -------------------------------------------------------------------------
 # Evaluated on EVERYONE randomized (including DNAs and Attendances)
 cancel_analysis_data <- analysis_data %>% 
-  filter(trial_arm %in% c("Control", "Intervention"))
+  filter(trial_arm %in% c("control", "intervention"))
 
 cancel_fit <- glm(cancellation_outcome ~ trial_arm + ml_baseline_risk, 
                   data = cancel_analysis_data, 
@@ -73,7 +73,7 @@ cancel_model_results <- coeftest(cancel_fit, vcov = sandwich)
 # -------------------------------------------------------------------------
 # Filter out Cancellations to preserve the "At-Risk" denominator
 wasted_analysis_data <- analysis_data %>% 
-  filter(trial_arm %in% c("Control", "Intervention") & final_attendance != "Cancelled")
+  filter(trial_arm %in% c("control", "intervention") & final_attendance != "cancelled")
 
 pp_wasted_fit <- glm(wasted_slot_outcome ~ pp_exposure + ml_baseline_risk, 
                      data = wasted_analysis_data, 

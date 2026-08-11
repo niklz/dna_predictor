@@ -502,8 +502,13 @@ run_stability <- function(iterations = 100, weeks_to_simulate = 26) {
       )
     
     # calculate the emergent weighted average modifier for this specific run
-    eff_numerator   <- (int_prop$p_cancel * 0) + (int_prop$p_tier2 * 0.85) + (int_prop$p_tier3 * (0.85 * 0.40))
-    eff_denominator <- (ctrl_prop$p_cancel * 0) + (ctrl_prop$p_active * 0.90)
+    # Calculate full cumulative risk for each pathway
+    eff_numerator   <- (int_prop$p_cancel * 0) + 
+      (int_prop$p_tier2  * (0.95 * 0.85)) + 
+      (int_prop$p_tier3  * (0.95 * 0.85 * 0.40))
+    
+    eff_denominator <- (ctrl_prop$p_cancel * 0) + 
+      (ctrl_prop$p_active * (0.95 * 0.90))
     
     dynamic_itt_dna <- eff_numerator / eff_denominator
     
@@ -573,7 +578,7 @@ plot_stability <- function(stability_results) {
     geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
-    labs(title = "Macro impact: advance cancellations (ITT)", x = "", y = "") +
+    labs(title = "Intent to treat (ITT) impacts: advanced cancellation", x = "", y = "") +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank())
   
@@ -587,7 +592,7 @@ plot_stability <- function(stability_results) {
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     coord_cartesian(xlim = c(0.2, 1.2)) + 
-    labs(title = "Global impact: total DNAs (ITT)", x = "", y = "") +
+    labs(title = "Intent to treat (ITT) impacts: wasted slots (DNAs / cancellations)", x = "", y = "") +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank())
   
@@ -596,8 +601,8 @@ plot_stability <- function(stability_results) {
     filter(endpoint == "pp_dna" & grepl("tier2|tier3", tolower(term))) %>%
     mutate(
       tier = case_when(
-        grepl("tier2", tolower(term)) ~ "Tier 2 impacts",
-        grepl("tier3", tolower(term)) ~ "Tier 3 impacts"
+        grepl("tier2", tolower(term)) ~ "",
+        grepl("tier3", tolower(term)) ~ ""
       ),
       term_label = case_when(
         grepl("tier2", tolower(term)) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_parameter, 3), ")"),
@@ -611,7 +616,7 @@ plot_stability <- function(stability_results) {
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
     coord_cartesian(xlim = c(0.2, 1.2)) + 
     facet_grid(tier ~ ., scales = "free_y", space = "free_y") +
-    labs(title = "Operational mechanism: DNAs by exposure (PP)", x = "Recovered risk ratio", y = "") +
+    labs(title = "Per protocol (PP) impacts: DNAs by exposure", x = "Recovered risk ratio", y = "") +
     theme_minimal(base_size = 12) +
     theme(panel.grid.minor = element_blank(), strip.text = element_text(face="bold"))
   

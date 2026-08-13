@@ -23,7 +23,8 @@ simulate_clinical_trial_advanced <- function(
     rr_tier2_passive  = 0.90,  
     rr_tier2_interact = 0.85,  
     rr_tier3_call     = 0.40,
-    cancellation_scalar = 1.25
+    cancellation_scalar = 1.25,
+    uncontactable_multiplier = 0.20 # NEW: Scales probability of being uncontactable based on ML baseline risk
 ) {
   
   mins_per_day <- 1440
@@ -42,6 +43,11 @@ simulate_clinical_trial_advanced <- function(
       ml_baseline_risk = ifelse(risk_profile == "low_risk", 
                                 rbeta(n(), shape1 = 2, shape2 = 50), 
                                 rbeta(n(), shape1 = 5, shape2 = 20)),
+      
+      # NEW: Uncontactable status is now directly driven by their baseline risk
+      # A patient with 80% DNA risk and a 0.2 multiplier has a 16% chance to ghost
+      is_uncontactable = runif(n()) < (ml_baseline_risk * uncontactable_multiplier), 
+      
       trial_arm = case_when(
         risk_profile == "low_risk" ~ "not_in_trial",
         risk_profile == "high_risk" & runif(n()) < trial_allocation_ratio ~ "control",
@@ -82,8 +88,13 @@ simulate_clinical_trial_advanced <- function(
         
         patient_name <- simmer::get_name(env)
         current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
-        patient_risk <- intervention_df$ml_baseline_risk[current_idx]
         
+        # Uncontactable patients automatically fail to respond to texts
+        if (intervention_df$is_uncontactable[current_idx]) {
+          return(3)
+        }
+        
+        patient_risk <- intervention_df$ml_baseline_risk[current_idx]
         dyn_response_prob <- base_response_prob * (1.5 * (1 - patient_risk))
         dyn_response_prob <- pmin(0.85, pmax(0.05, dyn_response_prob)) 
         
@@ -134,13 +145,36 @@ simulate_clinical_trial_advanced <- function(
         seize("coordinator", 1) %>%
         renege_abort() %>% 
         set_attribute("call_time", function() { simmer::now(env) }) %>%
+        
+        # Check if patient is uncontactable for call handling time
+        timeout(function() {
+          patient_name <- simmer::get_name(env)
+          current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
+          if (intervention_df$is_uncontactable[current_idx]) {
+            return(runif(1, 1, 3)) # Ghosted calls fail quickly (1-3 mins)
+          }
+          max(5, rnorm(1, mean = mean_handling_time, sd = 5))
+        }) %>%
+        
+        # Uncontactable patients don't cancel proactively
         set_attribute("wants_to_cancel", function() { 
+          patient_name <- simmer::get_name(env)
+          current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
+          if (intervention_df$is_uncontactable[current_idx]) return(0)
+          
           dyn_cancel_prob <- base_prob_cancel * cancellation_scalar
           dyn_cancel_prob <- pmin(0.8, pmax(0.01, dyn_cancel_prob))
           return(rbinom(1, 1, dyn_cancel_prob)) 
         }) %>%
         release("coordinator", 1) %>%
-        set_attribute("outcome_status", 1)
+        
+        # Assign status '3' if uncontactable ghost, '1' if successfully handled
+        set_attribute("outcome_status", function() {
+          patient_name <- simmer::get_name(env)
+          current_idx <- as.numeric(sub(".*_", "", patient_name)) + 1
+          if (intervention_df$is_uncontactable[current_idx]) return(3)
+          return(1)
+        })
     )
   
   standard_path <- trajectory("standard_care_journey") %>%
@@ -201,12 +235,28 @@ simulate_clinical_trial_advanced <- function(
         trial_arm == "control" ~ "standard_high_risk_control",
         outcome_status == 0 ~ "intervention_queue_timeout",
         outcome_status == 1 ~ "intervention_processed_coordinator", 
+        outcome_status == 3 ~ "intervention_uncontactable_ghost",
         TRUE ~ "completed_auto_text_only"
       ),
-      modulated_dna_prob = ml_baseline_risk * ifelse(appt_time > arrival_time, rr_tier1, 1) * ifelse(sms_tier2_type == "passive_reminder", rr_tier2_passive, rr_tier2_interact) * ifelse(pathway_outcome == "intervention_processed_coordinator", rr_tier3_call, 1),
+      
+      # NEW: If a patient is uncontactable, they get ZERO benefit from the interventions.
+      # Their DNA probability reverts entirely to their (already high) baseline risk.
+      # Everyone else gets the standard multipliers applied.
+      modulated_dna_prob = ifelse(
+        is_uncontactable,
+        ml_baseline_risk, 
+        ml_baseline_risk * 
+          ifelse(appt_time > arrival_time, rr_tier1, 1) * 
+          ifelse(sms_tier2_type == "passive_reminder", rr_tier2_passive, rr_tier2_interact) * 
+          ifelse(pathway_outcome == "intervention_processed_coordinator", rr_tier3_call, 1)
+      ),
       modulated_dna_prob = pmin(1, pmax(0, modulated_dna_prob)),
+      
+      # Ghosts still don't call in to cancel proactively
       modulated_cancel_prob = base_prob_cancel * ifelse(trial_arm == "intervention", cancellation_scalar, 1),
+      modulated_cancel_prob = ifelse(is_uncontactable, 0.0, modulated_cancel_prob),
       modulated_cancel_prob = pmin(1, pmax(0, modulated_cancel_prob)),
+      
       final_attendance = case_when(
         pathway_outcome %in% c("simulation_truncated", "intervention_pending_queue", "intervention_queue_timeout") ~ "censored",
         runif(n()) < modulated_cancel_prob ~ "cancelled",
@@ -223,7 +273,6 @@ simulate_clinical_trial_advanced <- function(
     )
   return(sop_dataset)
 }
-
 
 # =========================================================================
 # 2. PROCESS MINING & EXPLORATION VISUALIZATIONS
@@ -376,10 +425,10 @@ generate_trial_process_suite <- function(trial_data) {
   trace_exp <- trial_eventlog %>% trace_explorer(coverage = 1.0)
   
   animation_abs <- trial_eventlog %>%
-    animate_process(mode = "absolute", mapping = token_aes(color = token_scale("trial_arm", scale = "ordinal", range = c("#3498db", "#e74c3c"))))
+    animate_process(mode = "absolute", duration = 120, mapping = token_aes(color = token_scale("trial_arm", scale = "ordinal", range = c("#3498db", "#e74c3c"))))
   
   animation_rel <- trial_eventlog %>%
-    animate_process(mode = "relative", mapping = token_aes(color = token_scale("trial_arm", scale = "ordinal", range = c("#3498db", "#e74c3c"))))
+    animate_process(mode = "relative", duration = 120, mapping = token_aes(color = token_scale("trial_arm", scale = "ordinal", range = c("#3498db", "#e74c3c"))))
   
   return(list(
     event_log = trial_eventlog,
@@ -558,7 +607,7 @@ run_stability <- function(iterations = 100, weeks_to_simulate = 26) {
 
 plot_stability <- function(stability_results) {
   
-  # 1. summarize data and extract the targets automatically
+  # 1. Summarize data and extract the targets automatically
   summary_data <- stability_results %>%
     group_by(endpoint, term) %>%
     summarise(
@@ -569,40 +618,48 @@ plot_stability <- function(stability_results) {
       .groups    = "drop"
     )
   
-  # panel 1: advance cancellations (ITT)
-  cancel_plot_data <- summary_data %>%
-    filter(endpoint == "cancellation" & grepl("intervention", tolower(term))) %>%
-    mutate(term_label = paste0("Intervention vs control\n(true RR = ", round(true_parameter, 3), ")"))
+  # ---------------------------------------------------------
+  # CHART 1: ITT Global Impacts (Faceted by Endpoint)
+  # ---------------------------------------------------------
+  itt_plot_data <- summary_data %>%
+    filter(endpoint %in% c("cancellation", "global_itt_dna") & grepl("intervention", tolower(term))) %>%
+    mutate(
+      target_facet = case_when(
+        endpoint == "global_itt_dna" ~ "Wasted slots\n(DNAs / cancellations)",
+        endpoint == "cancellation" ~ "Advanced cancellations"
+      ),
+      # Set factor levels to control top-to-bottom order
+      target_facet = factor(target_facet, levels = c("Wasted slots\n(DNAs / cancellations)", "Advanced cancellations")),
+      term_label = paste0("Intervention vs control\n(true RR = ", round(true_parameter, 3), ")")
+    )
   
-  p1 <- ggplot(cancel_plot_data, aes(x = risk_ratio, y = term_label)) +
+  p_itt <- ggplot(itt_plot_data, aes(x = risk_ratio, y = term_label)) +
     geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
-    labs(title = "Intent to treat (ITT) impacts: advanced cancellation", x = "", y = "") +
+    # coord_cartesian(xlim = c(0.2, 1.2)) + 
+    facet_grid(target_facet ~ ., scales = "free_y", space = "free_y") +
+    labs(
+      title = "Full intervention effects, preserving randomisation (Itent-to-treat)",
+      x = "", 
+      y = ""
+    ) +
     theme_minimal(base_size = 12) +
-    theme(panel.grid.minor = element_blank())
+    theme(
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(face = "bold"),
+      strip.background = element_rect(fill = "gray95", color = NA) # Adds a nice header box to the facet
+    )
   
-  # panel 2: global DNA (ITT)
-  global_dna_data <- summary_data %>%
-    filter(endpoint == "global_itt_dna" & grepl("intervention", tolower(term))) %>%
-    mutate(term_label = paste0("Intervention vs control\n(true RR = ", round(true_parameter, 3), ")"))
-  
-  p2 <- ggplot(global_dna_data, aes(x = risk_ratio, y = term_label)) +
-    geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
-    geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
-    geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
-    coord_cartesian(xlim = c(0.2, 1.2)) + 
-    labs(title = "Intent to treat (ITT) impacts: wasted slots (DNAs / cancellations)", x = "", y = "") +
-    theme_minimal(base_size = 12) +
-    theme(panel.grid.minor = element_blank())
-  
-  # panel 3: mechanism (PP)
-  wasted_plot_data <- summary_data %>%
+  # ---------------------------------------------------------
+  # CHART 2: PP Behavioral Mechanics (Faceted by Component)
+  # ---------------------------------------------------------
+  pp_plot_data <- summary_data %>%
     filter(endpoint == "pp_dna" & grepl("tier2|tier3", tolower(term))) %>%
     mutate(
-      tier = case_when(
-        grepl("tier2", tolower(term)) ~ "",
-        grepl("tier3", tolower(term)) ~ ""
+      target_facet = case_when(
+        grepl("tier2", tolower(term)) ~ "Tier 2\nInteractive text effect",
+        grepl("tier3", tolower(term)) ~ "Tier 3\nPhone call effect"
       ),
       term_label = case_when(
         grepl("tier2", tolower(term)) ~ paste0("Interactive text vs passive text\n(true RR = ", round(true_parameter, 3), ")"),
@@ -610,21 +667,32 @@ plot_stability <- function(stability_results) {
       )
     )
   
-  p3 <- ggplot(wasted_plot_data, aes(x = risk_ratio, y = term_label)) +
+  p_pp <- ggplot(pp_plot_data, aes(x = risk_ratio, y = term_label)) +
     geom_pointrange(aes(xmin = conf_low, xmax = conf_high), color = "#2c3e50", size = 0.8, linewidth = 1.2) +
     geom_point(aes(x = true_parameter), color = "#e74c3c", size = 4, shape = 18) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgray") +
-    coord_cartesian(xlim = c(0.2, 1.2)) + 
-    facet_grid(tier ~ ., scales = "free_y", space = "free_y") +
-    labs(title = "Per protocol (PP) impacts: DNAs by exposure", x = "Recovered risk ratio", y = "") +
+    # coord_cartesian(xlim = c(0.2, 1.2)) + 
+    facet_grid(target_facet ~ ., scales = "free_y", space = "free_y") +
+    labs(
+      title = "Specific effects, ignoring randomisation (Per-protocol)",
+      x = "Recovered risk ratio", 
+      y = ""
+    ) +
     theme_minimal(base_size = 12) +
-    theme(panel.grid.minor = element_blank(), strip.text = element_text(face="bold"))
+    theme(
+      panel.grid.minor = element_blank(), 
+      strip.text = element_text(face = "bold"),
+      strip.background = element_rect(fill = "gray95", color = NA)
+    )
   
-  # combine using patchwork
-  final_plot <- (p2 / p1 / p3) + 
-    plot_layout(heights = c(1, 1, 2)) + 
+  # ---------------------------------------------------------
+  # COMBINE USING PATCHWORK
+  # ---------------------------------------------------------
+  final_plot <- (p_itt / p_pp) + 
+    plot_layout(heights = c(1, 1)) + 
     plot_annotation(
-      title = "Evaluation model stability over 100 replications"
+      title = "Evaluation model stability over 100 replications",
+      theme = theme(plot.title = element_text(size = 14, face = "bold"))
     )
   
   return(final_plot)

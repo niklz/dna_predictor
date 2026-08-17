@@ -1,14 +1,11 @@
-source("00_libraries.R")
-source("01_hyperparams.R")
+source("00_libraries_and_utils.R")
+source("02_data_prep.R")
 
 
 if(tune_model) {
   source("03_tune_model.R")
-}
-
-if(!tune_model) {
-  source("02_data_prep.R")
-  model_tune <- readRDS("data/rf_tune.RDS")
+} else {
+  model_tune <- readRDS("data/processed/rf_tune.rds")
 }
 
 # fit best model according to PR
@@ -19,7 +16,7 @@ model <- local({
   wf <- model_tune$tune_res %>% extract_workflow()
   fit <- wf %>%
     finalize_workflow(params) %>%
-    fit(data = train_raw)
+    fit(data = train_data)
   
   fit
 })

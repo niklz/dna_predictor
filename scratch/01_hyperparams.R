@@ -64,7 +64,7 @@ num_workers <- 2
 
 # model tuning
 cv_folds <- 10
-grid_size
+grid_size <- 25
 
 # RF hyperparams
 tree_range <- c(250, 1000)

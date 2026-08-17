@@ -88,11 +88,12 @@ wasted_model_results <- coeftest(pp_wasted_fit, vcov = sandwich)
 # or you specifically model DNA status across the whole arm.
 
 global_itt_data <- analysis_data %>%  
-  filter(trial_arm %in% c("Control", "Intervention"))
+  filter(trial_arm %in% c("control", "intervention"))
 
 itt_wasted_fit <- glm(wasted_slot_outcome ~ trial_arm + ml_baseline_risk, 
                       data = global_itt_data, 
                       family = poisson(link = "log"))
+
 itt_wasted_results <- coeftest(itt_wasted_fit, vcov = sandwich)
 
 # -------------------------------------------------------------------------
@@ -104,8 +105,6 @@ print(exp(cancel_model_results[, "Estimate"]))
 print("--- Model 2: wasted slot / DNA (PP) ---")
 print(exp(wasted_model_results[, "Estimate"]))
 
-# Validation Plotting
-plot_clean_dual_patchwork(cancel_model_results, wasted_model_results, true_rr_cancel = 1.25)
 
 
 # =========================================================================

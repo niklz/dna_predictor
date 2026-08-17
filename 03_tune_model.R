@@ -111,10 +111,10 @@ model_tune <- local({
   rf_grid <- grid_space_filling(mtry() %>% finalize(prepped_features),
                                 min_n(),
                                 trees(range = tree_range),
-                                size = 25)
+                                size = grid_size)
   
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_raw, v = 10, group = dim_patient_id)
+  dna_folds <- group_vfold_cv(train_raw, v = cv_folds, group = dim_patient_id)
   
   
   dna_folds %>%

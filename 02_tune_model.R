@@ -5,24 +5,62 @@ source("00_libraries_and_utils.R")
 conf <- config::get()
 
 model_tune_results <- local({
-  # Load prepped data and the recipe (decoupled from the prep script)
+  # Load the engineered training data
   train_data <- readRDS("data/processed/train_engineered.rds")
-  dna_recipe <- readRDS("data/processed/dna_recipe.rds")
   
   # -------------------------------------------------------------------------
-  # 2. Model Specification & Grid Setup
+  # 2. Define Workflow Builder (Prevents Environment Leakage)
   # -------------------------------------------------------------------------
-  rf_spec <- rand_forest(mtry = tune(),
-                         trees = tune(),
-                         min_n = tune()) %>%
-    set_engine("ranger",
-               num.threads = !!conf$num_threads,
-               importance = "permutation") %>%
-    set_mode("classification")
+  # Creating the workflow inside a temporary function isolates the environment.
+  # Passing a 0-row template keeps the recipe object extremely lightweight.
+  build_tuning_workflow <- function(target_col, data_template, fct_other_prp) {
+    
+    formula_obj <- as.formula(paste(target_col, "~ ."))
+    # Strip any parent environment references from the formula
+    environment(formula_obj) <- baseenv() 
+    
+    # Build a lightweight recipe using only the column blueprint
+    dna_recipe <- recipe(formula_obj, data = data_template) %>%
+      update_role(dim_patient_id, new_role = "id") %>%
+      step_novel(all_nominal_predictors()) %>%
+      step_unknown(all_nominal_predictors(), -imd) %>%
+      step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+      step_nzv(all_predictors()) %>%
+      step_impute_median(all_numeric_predictors())
+    
+    rf_spec <- rand_forest(
+      mtry = tune(),
+      trees = tune(),
+      min_n = tune()
+    ) %>%
+      set_engine("ranger", importance = "permutation") %>%
+      set_mode("classification")
+    
+    workflow() %>%
+      add_recipe(dna_recipe) %>%
+      add_model(rf_spec)
+  }
   
-  # Juice the recipe once to find out how many columns we have for mtry()
-  prepped_features <-
-    prep(dna_recipe) %>% juice() %>% select(-all_of(conf$target_col))
+  # Create a 0-row template containing only column names and types
+  data_template <- head(train_data, 0)
+  
+  # Build the ultra-lightweight workflow container (typically < 100 KB)
+  tuning_workflow <- build_tuning_workflow(
+    target_col    = conf$target_col,
+    data_template = data_template,
+    fct_other_prp = conf$fct_other_prp
+  )
+  
+  # -------------------------------------------------------------------------
+  # 3. Create Resamples and Parallel Grid Tuning
+  # -------------------------------------------------------------------------
+  set.seed(123)
+  dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = dim_patient_id)
+  
+  # Set up the search grid (juice the recipe locally once)
+  prepped_features <- prep(readRDS("data/processed/dna_recipe.rds")) %>% 
+    juice() %>% 
+    select(-all_of(conf$target_col))
   
   rf_grid <- grid_space_filling(
     mtry() %>% finalize(prepped_features),
@@ -31,25 +69,18 @@ model_tune_results <- local({
     size = conf$grid_size
   )
   
-  set.seed(123)
-  dna_folds <-
-    group_vfold_cv(train_data, v = conf$cv_folds, group = dim_patient_id)
-  
-  # -------------------------------------------------------------------------
-  # 3. Parallel Execution & Tuning
-  # -------------------------------------------------------------------------
+  # Set up parallel execution with safety parameters
   registerDoFuture()
   plan(
-    multisession,
+    multisession, 
     workers = conf$num_workers,
-    maxSizeOfObjects = 2000 * 1024 ^ 2
+    # This option is now safe because the workflow size has dropped dramatically
+    future.globals.maxSize = 1000 * 1024^2 
   )
   
   tic("Tidymodels grid tuning")
   
-  fits <- workflow() %>%
-    add_recipe(dna_recipe) %>%
-    add_model(rf_spec) %>%
+  fits <- tuning_workflow %>%
     tune_grid(
       resamples = dna_folds,
       grid = rf_grid,

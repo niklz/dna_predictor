@@ -7,8 +7,9 @@
 source("00_libraries_and_utils.R")
 
 optimal_bounds <- local({
+
   # 1. Load tuning results (which contains the hold-out predictions)
-  model_tune_results <- readRDS("data/processed/rf_tune.RDS")
+  model_tune_results <- readRDS("data/processed/rf_tune.rds")
   model_final <- readRDS("data/processed/rf_final_model.rds")
   best_params <- model_tune_results$best_params
   

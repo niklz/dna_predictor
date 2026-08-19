@@ -16,11 +16,6 @@ local({
       dna_outcome = factor(
         ifelse(attended_status_code == "3", "DNA", "attended"),
         levels = c("DNA", "attended") # Ensure 'DNA' is the first level if it's the event of interest
-      ),
-      # Handle missing IMD
-      imd = coalesce(
-        as.character(index_multiple_deprivation_decile),
-        "unknown"
       )
     ) %>%
     group_by(dim_patient_id) %>%
@@ -31,21 +26,31 @@ local({
   # -------------------------------------------------------------------------
   # 3. Split Train / Test (Using Config Vars)
   # -------------------------------------------------------------------------
+  # Swap "imd" for the raw database column so it is available for feature engineering
+  select_vars <- setdiff(conf$vars, "imd")
+  
   train_raw <- model_data %>%
     filter(test_train == "Training") %>%
     select(all_of(c(
-      conf$target_col, conf$vars, "dim_patient_id"
+      conf$target_col, 
+      select_vars, 
+      "index_multiple_deprivation_decile", 
+      "dim_patient_id"
     )))
   
   test_raw <- model_data %>%
     filter(test_train != "Training") %>%
     select(all_of(c(
-      conf$target_col, conf$vars, "dim_patient_id"
+      conf$target_col, 
+      select_vars, 
+      "index_multiple_deprivation_decile", 
+      "dim_patient_id"
     )))
   
   # -------------------------------------------------------------------------
   # 4. Define the Preprocessing Recipe
   # -------------------------------------------------------------------------
+  # The engineering step now builds 'imd' cleanly on the fly
   train_engineered <- apply_custom_feature_engineering(train_raw)
   
   dna_recipe <-
@@ -58,13 +63,12 @@ local({
     step_novel(all_nominal_predictors()) %>%
     
     # 2. Handle missing categorical data (excluding 'imd' since it was handled prior)
-    step_unknown(all_nominal_predictors(),-imd) %>%
+    step_unknown(all_nominal_predictors(), -imd) %>%
     
     # 3. Lump rare factor levels together dynamically using our config parameter
     step_other(all_nominal_predictors(), threshold = conf$fct_other_prp) %>%
     
     # 4. Target encoding for high-cardinality nominals (GP Practices, Clinics)
-    # Notice the dynamic injection of the target column using !!sym()
     step_lencode_mixed(any_of(
       c(
         "clinic_location",

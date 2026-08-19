@@ -11,13 +11,13 @@ library(dplyr)
 library(purrr)
 library(patchwork)
 
-source("99_utils.R")
+source("scratch/99_utils.R")
 
 # =========================================================================
 # SECTION 1: SIMULATION & PROCESS MINING SUITE
 # =========================================================================
 set.seed(42)
-trial_data <- simulate_clinical_trial_advanced(weeks_to_simulate = 26)
+trial_data <- simulate_clinical_trial_advanced(weeks_to_simulate = 26, total_patients_per_week = 310)
 
 # Examine the operational process dynamics
 plot_trial_journeys(trial_data)
@@ -113,3 +113,4 @@ print(exp(wasted_model_results[, "Estimate"]))
 # Run the dual stability test loop
 stability_results <- run_stability(iterations = 100)
 plot_stability(stability_results)
+

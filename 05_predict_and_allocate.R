@@ -1,14 +1,16 @@
 # =========================================================================
-# SCRIPT 06: PREDICT AND ALLOCATE (OPERATIONAL INFERENCE & WORKBOOK GENERATION)
+# SCRIPT 05: PREDICT AND ALLOCATE (OPERATIONAL INFERENCE & WORKBOOK GENERATION)
 # =========================================================================
 # 1. Loads new patient appointments for the upcoming week.
 # 2. Prepares features using 'apply_custom_feature_engineering()' (prevents train-serve skew).
 # 3. Generates and calibrates DNA risk predictions using the saved production bundle.
 # 4. Stratifies patients into risk profiles using the optimized operational threshold.
 # 5. Generates a deterministic MD5 hash key for downstream database joining.
-# 6. Randomly allocates high-risk patients using a force-balanced randomized split.
-# 7. Generates a beautifully styled, coordinator-ready Excel workbook with interactive 
-#    dropdown validation, mapped clinical "a_flags", and distinct visual tracks.
+# 6. Collapses 20 clinical vulnerability columns into a single comma-separated column.
+# 7. Injects real-time model execution metadata (run date and model version).
+# 8. Randomly allocates high-risk patients using a force-balanced randomized split.
+# 9. Generates a beautifully styled, coordinator-ready Excel workbook with interactive 
+#    dropdown validation, collapsed flags, metadata fields, and distinct visual tracks.
 
 # -------------------------------------------------------------------------
 # 1. Setup and load configurations
@@ -23,16 +25,14 @@ set.seed(42)
 # -------------------------------------------------------------------------
 # 2. Load production artifacts
 # -------------------------------------------------------------------------
-# Load the production model bundle (contains the fitted workflow and calibrator)
 model_bundle_path <- "data/processed/rf_final_model.rds"
 if (!file.exists(model_bundle_path)) {
   stop("Model bundle not found. Please train and calibrate the model first.")
 }
-model_bundle <- readRDS(model_bundle_path)
-rf_model     <- model_bundle$model
+model_bundle  <- readRDS(model_bundle_path)
+rf_model      <- model_bundle$model
 rf_calibrator <- model_bundle$calibrator
 
-# Load the operationally-optimized threshold
 threshold_path <- "data/processed/risk_threshold.RDS"
 if (!file.exists(threshold_path)) {
   stop("Operational threshold not found. Please calculate thresholds first.")
@@ -43,14 +43,17 @@ op_threshold   <- threshold_data$production_threshold
 # -------------------------------------------------------------------------
 # 3. Load incoming appointments
 # -------------------------------------------------------------------------
-# # In production, this loads the raw upcoming week's appointments from EHR/database
-# raw_new_appointments_path <- "data/new_clinic_appointments.csv"
-# if (!file.exists(raw_new_appointments_path)) {
-#   stop("New appointments CSV file not found. Ensure raw data is in data/ folder.")
-# }
-# new_appointments <- read.csv(raw_new_appointments_path)
-
-new_appointments <- readRDS("data/data_joined.RDS") %>% sample_n(400)
+raw_new_appointments_path <- "data/new_clinic_appointments.csv"
+if (!file.exists(raw_new_appointments_path)) {
+  # Fallback for dev environment testing
+  if (file.exists("data/data_joined.RDS")) {
+    new_appointments <- readRDS("data/data_joined.RDS") %>% sample_n(400)
+  } else {
+    stop("New appointments file not found.")
+  }
+} else {
+  new_appointments <- read.csv(raw_new_appointments_path)
+}
 
 # -------------------------------------------------------------------------
 # 4. Feature engineering
@@ -107,139 +110,8 @@ if (n_high_risk > 0) {
   final_manifest$trial_arm[high_risk_indices] <- balanced_arms
 }
 
-
 # -------------------------------------------------------------------------
-# 7. Generate cryptographic primary keys & initialize blank coordinator fields
-# -------------------------------------------------------------------------
-message("Generating unique cryptographic keys and mapping demographic columns...")
-vulnerability_cols <- c(
-  "a_ld", "a_autism", "a_interpreter_req_bsl", "a_interpreter_req_lang", "a_balance", 
-  "a_cognitive_impairment", "a_mobility_restriction", "a_hear_vis_impaired", "a_dementia", 
-  "a_depression", "a_downs_syndrome", "a_long_standing_condition", "a_makaton", 
-  "a_mild_cognitive_impairment", "a_memory_impairment", "a_mood_disorder", "a_other_disability", 
-  "a_psychosis", "a_severe_anxiety", "a_wheelchair_user"
-)
-
-vulnerability_labels <- c(
-  "Learning disability", "Autism", "BSL interpreter required", "Language interpreter required",
-  "Balance impairment", "Cognitive impairment", "Mobility restriction", "Sensory impairment",
-  "Dementia", "Depression", "Down's syndrome", "Long-standing condition", "Makaton communication",
-  "Mild cognitive impairment", "Memory impairment", "Mood disorder", "Other disability",
-  "Psychosis", "Severe anxiety", "Wheelchair user"
-)
-
-# =========================================================================
-# SCRIPT 06: PREDICT AND ALLOCATE (OPERATIONAL INFERENCE & WORKBOOK GENERATION)
-# =========================================================================
-# 1. Loads new patient appointments for the upcoming week.
-# 2. Prepares features using 'apply_custom_feature_engineering()' (prevents train-serve skew).
-# 3. Generates and calibrates DNA risk predictions using the saved production bundle.
-# 4. Stratifies patients into risk profiles using the optimized operational threshold.
-# 5. Generates a deterministic MD5 hash key for downstream database joining.
-# 6. Randomly allocates high-risk patients using a force-balanced randomized split.
-# 7. Generates a beautifully styled, coordinator-ready Excel workbook with interactive 
-#    dropdown validation, mapped clinical "a_flags", and distinct visual tracks.
-
-# -------------------------------------------------------------------------
-# 1. Setup and load configurations
-# -------------------------------------------------------------------------
-source("00_libraries_and_utils.R")
-# Load configuration parameters
-conf <- config::get()
-
-# Set a weekly seed for reproducible randomization of the trial arms.
-set.seed(42) 
-
-# -------------------------------------------------------------------------
-# 2. Load production artifacts
-# -------------------------------------------------------------------------
-# Load the production model bundle (contains the fitted workflow and calibrator)
-model_bundle_path <- "data/processed/rf_final_model.rds"
-if (!file.exists(model_bundle_path)) {
-  stop("Model bundle not found. Please train and calibrate the model first.")
-}
-model_bundle <- readRDS(model_bundle_path)
-rf_model     <- model_bundle$model
-rf_calibrator <- model_bundle$calibrator
-
-# Load the operationally-optimized threshold
-threshold_path <- "data/processed/risk_threshold.RDS"
-if (!file.exists(threshold_path)) {
-  stop("Operational threshold not found. Please calculate thresholds first.")
-}
-threshold_data <- readRDS(threshold_path)
-op_threshold   <- threshold_data$production_threshold
-
-# -------------------------------------------------------------------------
-# 3. Load incoming appointments
-# -------------------------------------------------------------------------
-# # In production, this loads the raw upcoming week's appointments from EHR/database
-# raw_new_appointments_path <- "data/new_clinic_appointments.csv"
-# if (!file.exists(raw_new_appointments_path)) {
-#   stop("New appointments CSV file not found. Ensure raw data is in data/ folder.")
-# }
-# new_appointments <- read.csv(raw_new_appointments_path)
-
-new_appointments <- readRDS("data/data_joined.RDS") %>% sample_n(400)
-
-# -------------------------------------------------------------------------
-# 4. Feature engineering
-# -------------------------------------------------------------------------
-message("Engineering features for incoming cohort...")
-engineered_appointments <- apply_custom_feature_engineering(new_appointments)
-
-# -------------------------------------------------------------------------
-# 5. Prediction and calibration
-# -------------------------------------------------------------------------
-message("Generating calibrated risk predictions...")
-raw_predictions <- predict(rf_model, new_data = engineered_appointments, type = "prob")
-
-calibrated_predictions <- raw_predictions %>%
-  cal_apply(rf_calibrator)
-
-# -------------------------------------------------------------------------
-# 6. Stratify risk and allocate trial arms (Force-Balanced Split)
-# -------------------------------------------------------------------------
-message("Stratifying patient risk profiles and allocating cohorts...")
-
-allocation_ratio <- ifelse(!is.null(conf$trial_allocation_ratio), 
-                           conf$trial_allocation_ratio, 
-                           0.50)
-
-final_manifest <- new_appointments %>%
-  mutate(
-    # Pull calibrated probabilities
-    dna_probability = calibrated_predictions$.pred_DNA,
-    
-    # Label risk profile based on our operational threshold
-    risk_profile = ifelse(dna_probability >= op_threshold, "high-risk", "low-risk"),
-    
-    # Default all patients to 'not in trial'
-    trial_arm = "not in trial"
-  )
-
-# Extract indices of the high-risk cohort
-high_risk_indices <- which(final_manifest$risk_profile == "high-risk")
-n_high_risk       <- length(high_risk_indices)
-
-if (n_high_risk > 0) {
-  # Calculate the exact number of control patients needed based on your allocation ratio
-  n_control <- round(n_high_risk * allocation_ratio)
-  n_interv  <- n_high_risk - n_control
-  
-  # Create a perfectly balanced vector of assignments and shuffle it randomly
-  balanced_arms <- sample(c(
-    rep("control", n_control),
-    rep("intervention", n_interv)
-  ))
-  
-  # Assign the balanced arms back to the high-risk patients
-  final_manifest$trial_arm[high_risk_indices] <- balanced_arms
-}
-
-
-# -------------------------------------------------------------------------
-# 7. Generate cryptographic primary keys & initialize blank coordinator fields
+# 7. Generate cryptographic primary keys, collapse flags, and map variables
 # -------------------------------------------------------------------------
 message("Generating unique cryptographic keys and collapsing vulnerability flags...")
 
@@ -271,7 +143,7 @@ final_manifest <- final_manifest %>%
   # Clean up raw columns and intermediate lists
   select(-all_of(vulnerability_cols), -v_vals) %>%
   mutate(
-    # MD5 hash of lowercase patient ID and appointment hour/month stamp [cite: 530, 532]
+    # MD5 hash of lowercase patient ID and appointment hour/month stamp to ensure uniqueness [cite: 530, 532]
     appointment_id = sapply(paste0(tolower(trimws(dim_patient_id)), "_", appt_month), 
                             function(x) digest::digest(x, algo = "md5", serialize = FALSE)),
     
@@ -286,7 +158,16 @@ final_manifest <- final_manifest %>%
     
     # Dynamic execution metadata columns [cite: 372, 391]
     date_model_run       = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    model_version        = ifelse(!is.null(conf$model_ver), conf$model_ver, "v1.1")
+    model_version        = ifelse(!is.null(conf$model_ver), conf$model_ver, "v1.1"),
+    
+    # Initialize blank coordinator fields (Col 16 to 22 / P to V) [cite: 378]
+    tier1_text_timestamp = "",
+    tier2_text_timestamp = "",
+    tier3_phone_attempt  = "",
+    tier3_call_timestamp = "",
+    patient_intent       = "",
+    call_notes           = "",
+    appointment_outcome  = ""
   )
 
 # -------------------------------------------------------------------------
@@ -297,7 +178,7 @@ output_manifest_path <- "outputs/weekly_scored_appointments.csv"
 dir.create("outputs", showWarnings = FALSE)
 write.csv(final_manifest, file = output_manifest_path, row.names = FALSE)
 
-# Generate a minimal action list strictly for the coordinators
+# Generate a minimal action list strictly for the coordinators (only Intervention patients)
 coordinator_list <- final_manifest %>%
   filter(trial_arm == "intervention") %>%
   select(appointment_id, patient_id, appointment_datetime, gp_practice, dna_risk) %>%
@@ -345,14 +226,14 @@ writeData(wb, sheet_name_inst, "Model-generated variables vs manual logs", start
 addStyle(wb, sheet_name_inst, style_section, rows = 4, cols = 1:3)
 setColWidths(wb, sheet_name_inst, cols = 1:3, widths = c(25, 50, 20))
 
-# Build mapping dictionary table (21 columns total)
+# Build mapping dictionary table (22 columns total with single accessibility_flags)
 mapping_dict <- data.frame(
   Variable_Name = c(
     "appointment_id", "patient_id", "appointment_datetime", "clinic_code", "gp_practice", 
     "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm", 
     "date_model_run", "model_version",
     "tier1_text_timestamp", "tier2_text_timestamp", "tier3_phone_attempt", "tier3_call_timestamp", 
-    "patient_intent", "call_notes"
+    "patient_intent", "call_notes", "appointment_outcome"
   ),
   Description = c(
     "Cryptographically secure unique appointment key generated via MD5 hash of patient_id and appt_month.",
@@ -375,13 +256,14 @@ mapping_dict <- data.frame(
     "Manual log: did a phone outreach attempt occur? (yes, no)",
     "Manual log: precise date and time of the phone outreach attempt.",
     "Manual log: patient's stated intent (confirm, cancel, reschedule, no_response).",
-    "Manual log: free-text clinical coordinator notes and cancellation reasons."
+    "Manual log: free-text clinical coordinator notes and cancellation reasons.",
+    "Manual log: final observed clinical outcome of the scheduled appointment slot."
   ),
   Data_Source = c(
     "Model generated", "Model generated", "EHR record", "EHR record", "EHR record",
     "EHR record", "EHR record", "EHR record", "Census lookup", "Clinical record", "Model generated",
     "Model generated", "Model generated", "Model generated", "Model generated", 
-    "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log"
+    "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log", "Coordinator log"
   )
 )
 
@@ -430,16 +312,16 @@ addStyle(wb, sheet_name_rost, style_kpi_label, rows = 4, cols = 4)
 writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(R%d:R%d, \"yes\")", start_row, end_row), startCol = 5, startRow = 4)
 addStyle(wb, sheet_name_rost, style_kpi_value, rows = 4, cols = 5)
 
-# Column headers (21 Columns total)
+# Column headers (22 Columns total)
 headers <- c(
   "appointment_id", "patient_id", "appointment_datetime", "clinic_code", "gp_practice", 
   "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm", 
   "date_model_run", "model_version",
   "tier1_text_timestamp", "tier2_text_timestamp", "tier3_phone_attempt", "tier3_call_timestamp", 
-  "patient_intent", "call_notes"
+  "patient_intent", "call_notes", "appointment_outcome"
 )
 writeData(wb, sheet_name_rost, t(headers), startCol = 1, startRow = 8, colNames = FALSE)
-addStyle(wb, sheet_name_rost, style_header, rows = 8, cols = 1:21)
+addStyle(wb, sheet_name_rost, style_header, rows = 8, cols = 1:22)
 
 # -------------------------------------------------------------------------
 # Vectorized Pre-Population inside R (Loop-Free!) [cite: 503]
@@ -451,7 +333,7 @@ export_roster_data <- final_manifest %>%
     date_model_run, model_version
   ) %>%
   mutate(
-    # Set text reminders and call variables dynamically based on trial arms [cite: 503]
+    # Set text reminders, call variables, and outcome fields dynamically based on trial arms [cite: 503]
     tier1_text_timestamp = case_when(
       trial_arm == "not in trial" ~ "N/A - Not in Trial",
       TRUE ~ ""
@@ -479,10 +361,15 @@ export_roster_data <- final_manifest %>%
       trial_arm == "control" ~ "N/A - Control",
       trial_arm == "not in trial" ~ "N/A - Not in Trial",
       TRUE ~ ""
+    ),
+    # Pre-populate Standard BAU track as N/A, keep trial arms blank for coordinator entry
+    appointment_outcome = case_when(
+      trial_arm == "not in trial" ~ "N/A - Not in Trial",
+      TRUE ~ ""
     )
   )
 
-# Write all 21 columns to Excel in a SINGLE high-speed operation
+# Write all 22 columns to Excel in a SINGLE high-speed operation
 writeData(wb, sheet_name_rost, export_roster_data, startCol = 1, startRow = 9, colNames = FALSE)
 
 # -------------------------------------------------------------------------
@@ -507,24 +394,25 @@ addStyle(wb, sheet_name_rost, style_prob_pct, rows = start_row:end_row, cols = 1
 # Group-Based Vectorized Conditional Formatting
 # -------------------------------------------------------------------------
 if (length(intervention_rows) > 0) {
-  # Active Intervention: Highlight all text and call columns 16 to 21 (P-U)
-  addStyle(wb, sheet_name_rost, style_active_input, rows = intervention_rows, cols = 16:21, gridExpand = TRUE)
+  # Active Intervention: Highlight all text, call, and outcome columns 16 to 22 (P-V)
+  addStyle(wb, sheet_name_rost, style_active_input, rows = intervention_rows, cols = 16:22, gridExpand = TRUE)
 }
 
 if (length(control_rows) > 0) {
-  # Control group: Highlight text timestamps (16:17) in blue, phone cols (18:21) in gray
-  addStyle(wb, sheet_name_rost, style_active_input, rows = control_rows, cols = 16:17, gridExpand = TRUE)
+  # Control group: Highlight text timestamps (16:17) and final outcome (22) in blue, phone cols (18:21) in gray
+  addStyle(wb, sheet_name_rost, style_active_input, rows = control_rows, cols = c(16, 17, 22), gridExpand = TRUE)
   addStyle(wb, sheet_name_rost, style_control_row, rows = control_rows, cols = 18:21, gridExpand = TRUE)
 }
 
 if (length(not_in_trial_rows) > 0) {
-  # Not in Trial: Highlight all logging fields (16:21) in gray
-  addStyle(wb, sheet_name_rost, style_control_row, rows = not_in_trial_rows, cols = 16:21, gridExpand = TRUE)
+  # Not in Trial: Highlight all logging fields (16:22) in gray
+  addStyle(wb, sheet_name_rost, style_control_row, rows = not_in_trial_rows, cols = 16:22, gridExpand = TRUE)
 }
 
-# Apply dynamic data validation dropdown lists for active outreach columns (Columns R/18 & T/20)
+# Apply dynamic data validation dropdown lists for active outreach columns (Columns R/18, T/20, V/22)
 dataValidation(wb, sheet_name_rost, col = 18, rows = start_row:end_row, type = "list", value = '\"yes,no\"')
 dataValidation(wb, sheet_name_rost, col = 20, rows = start_row:end_row, type = "list", value = '\"confirm,cancel,reschedule,no_response\"')
+dataValidation(wb, sheet_name_rost, col = 22, rows = start_row:end_row, type = "list", value = '\"Attended,DNA,Cancelled,Rescheduled\"')
 
 # Column width padding
 setColWidths(wb, sheet_name_rost, cols = 1, widths = 36)   # appointment_id
@@ -536,7 +424,7 @@ setColWidths(wb, sheet_name_rost, cols = 6, widths = 10)   # age
 setColWidths(wb, sheet_name_rost, cols = 7, widths = 10)   # sex
 setColWidths(wb, sheet_name_rost, cols = 8, widths = 16)   # ethnicity
 setColWidths(wb, sheet_name_rost, cols = 9, widths = 10)   # imd
-setColWidths(wb, sheet_name_rost, cols = 10, widths = 38)  # accessibility_flags (collapsed list)
+setColWidths(wb, sheet_name_rost, cols = 10, widths = 38)  # accessibility_flags
 setColWidths(wb, sheet_name_rost, cols = 11, widths = 14)  # dna_risk
 setColWidths(wb, sheet_name_rost, cols = 12, widths = 14)  # risk_label
 setColWidths(wb, sheet_name_rost, cols = 13, widths = 14)  # trial_arm
@@ -545,6 +433,7 @@ setColWidths(wb, sheet_name_rost, cols = 15, widths = 15)  # model_version
 setColWidths(wb, sheet_name_rost, cols = 16:17, widths = 22) # manual text timestamps
 setColWidths(wb, sheet_name_rost, cols = 18:20, widths = 22) # manual call logging blanks
 setColWidths(wb, sheet_name_rost, cols = 21, widths = 30)  # call_notes
+setColWidths(wb, sheet_name_rost, cols = 22, widths = 22)  # appointment_outcome
 
 # Lock split panes (firstActiveCol = 2 freezes Column A and Row 8 headers)
 freezePane(wb, sheet_name_rost, firstActiveRow = 9, firstActiveCol = 2)
@@ -580,4 +469,3 @@ cat("====================================================\n")
 cat(sprintf("Success. Scored manifest saved to %s\n", output_manifest_path))
 cat(sprintf("Success. Pre-formatted coordinator workbook saved to %s\n", output_excel_path))
 cat("====================================================\n\n")
-

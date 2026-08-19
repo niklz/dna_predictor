@@ -16,6 +16,7 @@ library(future)
 library(doFuture)
 library(GGally)
 library(config)
+library(openxlsx)
 
 conf <- config::get()
 

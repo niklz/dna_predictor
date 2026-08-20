@@ -8,7 +8,7 @@ local({
   # -------------------------------------------------------------------------
   # 2. Load & Engineer Base Data
   # -------------------------------------------------------------------------
-  dataset <- readRDS("data/data_joined.RDS")
+  dataset <- read.csv("data/DNA_20260818.csv")
   
   model_data <- dataset %>%
     mutate(
@@ -86,13 +86,31 @@ local({
     step_impute_median(all_numeric_predictors())
   
   # -------------------------------------------------------------------------
-  # 5. Save Outputs (Base R)
+  # 5. Extract a Balanced, Stratified 10% Subset for Grid Tuning
+  # -------------------------------------------------------------------------
+  # With ~1M rows, running 10-fold CV over a grid of 25 is computationally redundant.
+  # We slice a representative 20% sample, group-stratified by our target outcome 
+  # (dna_outcome) to perfectly preserve baseline class prevalence.
+  set.seed(42) # Set seed for reproducible sampling
+  
+  train_engineered_tune <- train_engineered %>%
+    group_by(!!sym(conf$target_col)) %>%
+    slice_sample(prop = 0.20) %>%
+    ungroup()
+  
+  # -------------------------------------------------------------------------
+  # 6. Save Outputs (Base R)
   # -------------------------------------------------------------------------
   dir.create("data/processed", showWarnings = FALSE)
   
+  # Save the full 1,000,000-row set for the final model fit
   saveRDS(train_engineered, "data/processed/train_engineered.rds")
+  
+  # Save the 100,000-row subset strictly for the grid-tuning loop
+  saveRDS(train_engineered_tune, "data/processed/train_engineered_tune.rds")
+  
   saveRDS(test_raw, "data/processed/test_raw.rds")
   saveRDS(dna_recipe, "data/processed/dna_recipe.rds")
   
-  message("Data prep complete. Train, Test, and Recipe saved to /data/processed/")
+  message("Data prep complete. Full train, 20% tune subset, test set, and recipe saved.")
 })

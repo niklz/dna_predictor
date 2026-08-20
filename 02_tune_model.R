@@ -6,7 +6,7 @@ conf <- config::get()
 
 model_tune_results <- local({
   # Load the engineered training data
-  train_data <- readRDS("data/processed/train_engineered.rds")
+  train_data <- readRDS("data/processed/train_engineered_tune.rds")
   
   # -------------------------------------------------------------------------
   # 2. Define Workflow Builder (Prevents Environment Leakage)
@@ -72,10 +72,9 @@ model_tune_results <- local({
   # Set up parallel execution with safety parameters
   registerDoFuture()
   plan(
-    multisession, 
+    multicore, 
     workers = conf$num_workers,
-    # This option is now safe because the workflow size has dropped dramatically
-    future.globals.maxSize = 1000 * 1024^2 
+    future.globals.maxSize = 3000 * 1024^2 
   )
   
   tic("Tidymodels grid tuning")
@@ -88,7 +87,8 @@ model_tune_results <- local({
       control = control_grid(
         save_pred = TRUE,
         save_workflow = TRUE,
-        parallel_over = "everything"
+        parallel_over = "everything",
+        verbose = TRUE
       )
     )
   

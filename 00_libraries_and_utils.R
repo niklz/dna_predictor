@@ -16,6 +16,9 @@ library(future)
 library(doFuture)
 library(GGally)
 library(config)
+library(DBI)
+library(odbc)
+
 
 conf <- config::get()
 
@@ -55,23 +58,12 @@ aggregate_ethnicity_high_level <- function(x) {
 }
 
 apply_custom_feature_engineering <- function(data) {
-  # Handle IMD coalescing from the raw database column if present
-  if ("index_multiple_deprivation_decile" %in% names(data)) {
-    data <- data %>%
-      mutate(
-        imd = coalesce(
-          as.character(index_multiple_deprivation_decile),
-          "unknown"
-        )
-      )
-  }
-  
   data %>%
     mutate(
       ethnicity_clean = collect_ethnicity(ethnicity),
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
-      ethnicity_group = factor(ethnicity_group) %>% relevel(ref = "White"),
+      ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
       appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
@@ -82,13 +74,14 @@ apply_custom_feature_engineering <- function(data) {
       appt_hour_cos = cos(2 * pi * appt_hour / 24),
       has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
     ) %>%
-    # Drop raw redundant columns safely
+    rename(imd = index_multiple_deprivation_decile) %>%
+    mutate(
+      across(c(local_spec_code, national_spec_code, imd), as.character)
+    ) %>%
+    # Replaces step_rm()
     select(
-      -any_of(c(
-        "appt_hour", "lead_time_days", "appt_date", "appt_month", 
-        "prev_dna_ly", "ethnicity", "ethnicity_clean", "age_group",
-        "index_multiple_deprivation_decile"
-      ))
+      -appt_hour, -lead_time_days, -appt_date, -appt_month, 
+      -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_group
     )
 }
 

@@ -43,7 +43,7 @@ op_threshold   <- threshold_data$production_threshold
 # -------------------------------------------------------------------------
 # 3. Load incoming appointments
 # -------------------------------------------------------------------------
-raw_new_appointments_path <- "data/new_clinic_appointments.csv"
+raw_new_appointments_path <- conf$new_appointment_path
 if (!file.exists(raw_new_appointments_path)) {
   # Fallback for dev environment testing
   if (file.exists("data/data_joined.RDS")) {
@@ -469,3 +469,4 @@ cat("====================================================\n")
 cat(sprintf("Success. Scored manifest saved to %s\n", output_manifest_path))
 cat(sprintf("Success. Pre-formatted coordinator workbook saved to %s\n", output_excel_path))
 cat("====================================================\n\n")
+

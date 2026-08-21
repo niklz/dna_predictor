@@ -47,7 +47,7 @@ raw_new_appointments_path <- conf$new_appointment_path
 if (!file.exists(raw_new_appointments_path)) {
   # Fallback for dev environment testing
   if (file.exists("data/data_joined.RDS")) {
-    new_appointments <- readRDS("data/data_joined.RDS") %>% sample_n(400)
+    new_appointments <- read.csv("data/DNA_20260818.csv") %>% sample_n(400)
   } else {
     stop("New appointments file not found.")
   }

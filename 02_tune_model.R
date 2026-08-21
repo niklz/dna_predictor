@@ -81,13 +81,6 @@ model_tune_results <- local({
   handlers(global = TRUE)
   handlers("txtprogressbar")
   
-  with_progress({
-    p <- progressor(steps = conf$cv_folds * conf$grid_size)
-    
-    progress_extractor <- function(x) {
-      p() 
-      return(NULL) 
-    }
     
     fits <- tuning_workflow %>%
       tune_grid(
@@ -98,11 +91,9 @@ model_tune_results <- local({
           save_pred = TRUE,
           save_workflow = TRUE,
           parallel_over = "everything",
-          extract = progress_extractor,
           verbose = TRUE
         )
       )
-  })
   
   toc()
   
@@ -192,9 +183,9 @@ model_tune_results <- local({
 
 
 saveRDS(model_tune_results, "data/processed/rf_tune.rds")
-# saveRDS(
-#   model_tune_results,
-#   "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS"
-# )
+saveRDS(
+  model_tune_results,
+  "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS"
+)
 
 message("Tuning complete. Diagnostics saved to data/processed/")

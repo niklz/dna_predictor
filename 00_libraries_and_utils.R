@@ -68,7 +68,7 @@ apply_custom_feature_engineering <- function(data) {
       # Set the baseline reference level to the most frequent category
       ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
       appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
-      appt_dow = factor(weekdays(appt_date)),
+      # appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
       lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
       lead_time_days_log = log1p(pmax(0, lead_time_days)),

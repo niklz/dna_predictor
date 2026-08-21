@@ -77,10 +77,9 @@ apply_custom_feature_engineering <- function(data) {
     ) %>%
     rename(imd = index_multiple_deprivation_decile) %>%
     mutate(
-      # --- 2. STRICT SCHEMA COERCION (Prevents recipes::prep class mismatches!) ---
       
-      # Coerce Character variables (including the missing distance and age variables)
-      across(c(local_spec_code, national_spec_code, imd, distance_km, age_at_appointment), as.character),
+      # Coerce Character variables 
+      across(c(local_spec_code, national_spec_code, imd), as.character),
       
       # Coerce Integer variables (protects ID and indicators)
       dim_patient_id = as.integer(dim_patient_id),

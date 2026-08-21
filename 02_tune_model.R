@@ -4,6 +4,9 @@
 source("00_libraries_and_utils.R")
 conf <- config::get()
 
+# progress bar
+
+
 model_tune_results <- local({
   # Load the engineered training data
   train_data <- readRDS("data/processed/train_engineered_tune.rds")
@@ -13,11 +16,12 @@ model_tune_results <- local({
   # -------------------------------------------------------------------------
   # Creating the workflow inside a temporary function isolates the environment.
   # Passing a 0-row template keeps the recipe object extremely lightweight.
-  build_tuning_workflow <- function(target_col, data_template, fct_other_prp) {
-    
+  build_tuning_workflow <- function(target_col,
+                                    data_template,
+                                    fct_other_prp) {
     formula_obj <- as.formula(paste(target_col, "~ ."))
     # Strip any parent environment references from the formula
-    environment(formula_obj) <- baseenv() 
+    environment(formula_obj) <- baseenv()
     
     # Build a lightweight recipe using only the column blueprint
     dna_recipe <- recipe(formula_obj, data = data_template) %>%
@@ -28,11 +32,9 @@ model_tune_results <- local({
       step_nzv(all_predictors()) %>%
       step_impute_median(all_numeric_predictors())
     
-    rf_spec <- rand_forest(
-      mtry = tune(),
-      trees = tune(),
-      min_n = tune()
-    ) %>%
+    rf_spec <- rand_forest(mtry = tune(),
+                           trees = tune(),
+                           min_n = tune()) %>%
       set_engine("ranger", importance = "permutation") %>%
       set_mode("classification")
     
@@ -58,8 +60,8 @@ model_tune_results <- local({
   dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = dim_patient_id)
   
   # Set up the search grid (juice the recipe locally once)
-  prepped_features <- prep(readRDS("data/processed/dna_recipe.rds")) %>% 
-    juice() %>% 
+  prepped_features <- prep(readRDS("data/processed/dna_recipe.rds")) %>%
+    juice() %>%
     select(-all_of(conf$target_col))
   
   rf_grid <- grid_space_filling(
@@ -70,27 +72,30 @@ model_tune_results <- local({
   )
   
   # Set up parallel execution with safety parameters
-  options(future.globals.maxSize = 3000 * 1024^2) 
+  options(future.globals.maxSize = 3000 * 1024^2)
   registerDoFuture()
-  plan(
-    multisession, 
-    workers = conf$num_workers
-  )
+  plan(multisession, workers = conf$num_workers)
   
   tic("Tidymodels grid tuning")
   
-  fits <- tuning_workflow %>%
-    tune_grid(
-      resamples = dna_folds,
-      grid = rf_grid,
-      metrics = metric_set(pr_auc, roc_auc),
-      control = control_grid(
-        save_pred = TRUE,
-        save_workflow = TRUE,
-        parallel_over = "everything",
-        verbose = TRUE
+  handlers(global = TRUE)
+  handlers("txtprogressbar")
+  
+  with_progress({
+    p <- progressor(steps = conf$cv_folds * conf$grid_size)
+    fits <- tuning_workflow %>%
+      tune_grid(
+        resamples = dna_folds,
+        grid = rf_grid,
+        metrics = metric_set(pr_auc, roc_auc),
+        control = control_grid(
+          save_pred = TRUE,
+          save_workflow = TRUE,
+          parallel_over = "everything",
+          verbose = TRUE
+        )
       )
-    )
+  })
   
   toc()
   
@@ -106,7 +111,7 @@ model_tune_results <- local({
     pivot_longer(mtry:min_n, values_to = "value", names_to = "parameter") %>%
     ggplot(aes(value, mean, color = parameter)) +
     geom_point(alpha = 0.8, show.legend = FALSE) +
-    facet_wrap(~ parameter, scales = "free_x") +
+    facet_wrap( ~ parameter, scales = "free_x") +
     labs(x = NULL, y = "PR AUC")
   
   para_coord_plot <- fits %>%
@@ -180,6 +185,9 @@ model_tune_results <- local({
 
 
 saveRDS(model_tune_results, "data/processed/rf_tune.rds")
-saveRDS(model_tune_results, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
+# saveRDS(
+#   model_tune_results,
+#   "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS"
+# )
 
 message("Tuning complete. Diagnostics saved to data/processed/")

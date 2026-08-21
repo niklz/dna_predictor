@@ -70,11 +70,11 @@ model_tune_results <- local({
   )
   
   # Set up parallel execution with safety parameters
+  options(future.globals.maxSize = 3000 * 1024^2) 
   registerDoFuture()
   plan(
-    multicore, 
-    workers = conf$num_workers,
-    future.globals.maxSize = 3000 * 1024^2 
+    multisession, 
+    workers = conf$num_workers
   )
   
   tic("Tidymodels grid tuning")
@@ -171,7 +171,8 @@ model_tune_results <- local({
     param_trace = hyper_param_trace,
     para_coord_plot = para_coord_plot,
     pr_plot = pr_plot,
-    roc_plot = roc_plot
+    roc_plot = roc_plot,
+    model_ver = conf$model_ver
   )
   
   model_tune_results
@@ -179,5 +180,6 @@ model_tune_results <- local({
 
 
 saveRDS(model_tune_results, "data/processed/rf_tune.rds")
+saveRDS(model_tune_results, "S:/Finance/Shared Area/BNSSG - BI/8 Modelling and Analytics/working/nh/projects/dna_predictor/data/rf_tune.RDS")
 
 message("Tuning complete. Diagnostics saved to data/processed/")

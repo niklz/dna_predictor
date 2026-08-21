@@ -34,7 +34,8 @@ model <- local({
   
   list(
     model = fit,
-    calibrator = cal_model
+    calibrator = cal_model,
+    model_ver = conf$model_ver
   )
 })
 

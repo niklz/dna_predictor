@@ -16,8 +16,10 @@ library(future)
 library(doFuture)
 library(GGally)
 library(config)
+library(openxlsx)
 library(DBI)
 library(odbc)
+library(progressr)
 
 
 conf <- config::get()

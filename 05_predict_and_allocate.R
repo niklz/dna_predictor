@@ -38,7 +38,7 @@ if (!file.exists(threshold_path)) {
   stop("Operational threshold not found. Please calculate thresholds first.")
 }
 threshold_data <- readRDS(threshold_path)
-op_threshold   <- threshold_data$production_threshold
+op_threshold   <- threshold_data$bounds$floor_threshold
 
 # -------------------------------------------------------------------------
 # 3. Load incoming appointments

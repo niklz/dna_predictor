@@ -39,5 +39,4 @@ model <- local({
   )
 })
 
-
 saveRDS(model, "data/processed/rf_final_model.rds")

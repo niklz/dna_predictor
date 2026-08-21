@@ -60,6 +60,7 @@ aggregate_ethnicity_high_level <- function(x) {
 apply_custom_feature_engineering <- function(data) {
   data %>%
     mutate(
+      # --- 1. Your Original Feature Engineering ---
       ethnicity_clean = collect_ethnicity(ethnicity),
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
@@ -76,9 +77,20 @@ apply_custom_feature_engineering <- function(data) {
     ) %>%
     rename(imd = index_multiple_deprivation_decile) %>%
     mutate(
-      across(c(local_spec_code, national_spec_code, imd), as.character)
+      # --- 2. STRICT SCHEMA COERCION (Prevents recipes::prep class mismatches!) ---
+      
+      # Coerce Character variables (including the missing distance and age variables)
+      across(c(local_spec_code, national_spec_code, imd, distance_km, age_at_appointment), as.character),
+      
+      # Coerce Integer variables (protects ID and indicators)
+      dim_patient_id = as.integer(dim_patient_id),
+      nfa_ind        = as.integer(nfa_ind),
+      appt_wknd_ind  = as.integer(appt_wknd_ind),
+      
+      # Bulk coerce all 20 clinical accessibility flags ('a_') to integers
+      across(starts_with("a_"), as.integer)
     ) %>%
-    # Replaces step_rm()
+    # --- 3. Clean up raw columns (Replaces step_rm() to avoid workflow leaks) ---
     select(
       -appt_hour, -lead_time_days, -appt_date, -appt_month, 
       -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_group

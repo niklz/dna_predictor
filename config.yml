@@ -51,11 +51,11 @@ default:
   # Execution flags
   tune_model: true
   num_threads: 4
-  num_workers: 7
+  num_workers: 2
 
   # Model tuning
-  cv_folds: 10
-  grid_size: 25
+  cv_folds: 2
+  grid_size: 2
 
   # Random Forest hyperparams
   tree_range: [250, 1000]

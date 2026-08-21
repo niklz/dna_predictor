@@ -83,6 +83,12 @@ model_tune_results <- local({
   
   with_progress({
     p <- progressor(steps = conf$cv_folds * conf$grid_size)
+    
+    progress_extractor <- function(x) {
+      p() 
+      return(NULL) 
+    }
+    
     fits <- tuning_workflow %>%
       tune_grid(
         resamples = dna_folds,
@@ -92,6 +98,7 @@ model_tune_results <- local({
           save_pred = TRUE,
           save_workflow = TRUE,
           parallel_over = "everything",
+          extract = progress_extractor,
           verbose = TRUE
         )
       )

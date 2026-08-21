@@ -21,7 +21,6 @@ library(DBI)
 library(odbc)
 library(progressr)
 
-
 conf <- config::get()
 
 # -------------------------------------------------------------------------

@@ -17,6 +17,25 @@ model <- local({
   
   params <- model_tune_results$best_params
   wf <- model_tune_results$tune_res %>% extract_workflow()
+  
+  # ---------------------------------------------------------
+  # 1. Speed up Final Model Training (Multi-threading Override)
+  # ---------------------------------------------------------
+  # Extract the current parsnip spec and update ranger's threads [cite: 419]
+  current_spec <- extract_spec_parsnip(wf)
+  
+  updated_spec <- current_spec %>%
+    set_engine(
+      "ranger",
+      # Dynamically detects cores and uses all but one for OS stability
+      num.threads = parallel::detectCores() - 1, 
+      importance = "permutation"
+    )
+  
+  wf <- wf %>% 
+    remove_model() %>% 
+    add_model(updated_spec)
+  
   fit <- wf %>%
     finalize_workflow(params) %>%
     fit(data = train_data)

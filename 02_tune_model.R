@@ -11,47 +11,27 @@ model_tune_results <- local({
   # Load the engineered training data
   train_data <- readRDS("data/processed/train_engineered_tune.rds")
   
-  # -------------------------------------------------------------------------
-  # 2. Define Workflow Builder (Prevents Environment Leakage)
-  # -------------------------------------------------------------------------
-  # Creating the workflow inside a temporary function isolates the environment.
-  # Passing a 0-row template keeps the recipe object extremely lightweight.
-  build_tuning_workflow <- function(target_col,
-                                    data_template,
-                                    fct_other_prp) {
-    formula_obj <- as.formula(paste(target_col, "~ ."))
-    # Strip any parent environment references from the formula
-    environment(formula_obj) <- baseenv()
-    
-    # Build a lightweight recipe using only the column blueprint
-    dna_recipe <- recipe(formula_obj, data = data_template) %>%
-      update_role(dim_patient_id, new_role = "id") %>%
-      step_novel(all_nominal_predictors()) %>%
-      step_unknown(all_nominal_predictors(), -imd) %>%
-      step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
-      step_nzv(all_predictors()) %>%
-      step_impute_median(all_numeric_predictors())
-    
-    rf_spec <- rand_forest(mtry = tune(),
-                           trees = tune(),
-                           min_n = tune()) %>%
-      set_engine("ranger", importance = "permutation") %>%
-      set_mode("classification")
-    
-    workflow() %>%
-      add_recipe(dna_recipe) %>%
-      add_model(rf_spec)
-  }
+  rf_spec <- rand_forest(mtry = tune(),
+                         trees = tune(),
+                         min_n = tune()) %>%
+    set_engine("ranger", importance = "permutation") %>%
+    set_mode("classification")
+  
   
   # Create a 0-row template containing only column names and types
   data_template <- head(train_data, 0)
   
-  # Build the ultra-lightweight workflow container (typically < 100 KB)
-  tuning_workflow <- build_tuning_workflow(
-    target_col    = conf$target_col,
+  # Build the recipe using the exact same centralized configuration [cite: 11]
+  tuning_recipe <- build_trial_recipe(
     data_template = data_template,
+    target_col    = conf$target_col,
     fct_other_prp = conf$fct_other_prp
   )
+  
+  # Bind the recipe and model specification to your workflow
+  tuning_workflow <- workflow() %>%
+    add_recipe(tuning_recipe) %>%
+    add_model(rf_spec)
   
   # -------------------------------------------------------------------------
   # 3. Create Resamples and Parallel Grid Tuning

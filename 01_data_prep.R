@@ -8,7 +8,7 @@ local({
   # -------------------------------------------------------------------------
   # 2. Load & Engineer Base Data
   # -------------------------------------------------------------------------
-  dataset <- read.csv("data/DNA_20260818.csv", na.strings = c("NA", "NULL"))
+  dataset <- read.csv("data/DNA_20260818.csv")
   
   model_data <- dataset %>%
     mutate(
@@ -53,44 +53,18 @@ local({
   # The engineering step now builds 'imd' cleanly on the fly
   train_engineered <- apply_custom_feature_engineering(train_raw)
   
-  dna_recipe <-
-    recipe(as.formula(paste(conf$target_col, "~ .")), data = train_engineered) %>%
-    
-    # 0. Keep ID for tracking predictions later, but hide it from the model
-    update_role(dim_patient_id, new_role = "id") %>%
-    
-    # 1. Handle novel factor levels safely when predicting on future patients
-    step_novel(all_nominal_predictors()) %>%
-    
-    # 2. Handle missing categorical data (excluding 'imd' since it was handled prior)
-    step_unknown(all_nominal_predictors(), -imd) %>%
-    
-    # 3. Lump rare factor levels together dynamically using our config parameter
-    step_other(all_nominal_predictors(), threshold = conf$fct_other_prp) %>%
-    
-    # 4. Target encoding for high-cardinality nominals (GP Practices, Clinics)
-    step_lencode_mixed(any_of(
-      c(
-        "clinic_location",
-        "clinic_code",
-        "site_code",
-        "registered_gp_practice"
-      )
-    ),
-    outcome = vars(!!sym(conf$target_col))) %>%
-    
-    # 5. Remove zero and near-zero variance predictors
-    step_nzv(all_predictors()) %>%
-    
-    # 6. Impute any missing numerical data with the median
-    step_impute_median(all_numeric_predictors())
+  dna_recipe <- build_trial_recipe(
+    data_template = data_template,
+    target_col    = conf$target_col,
+    fct_other_prp = conf$fct_other_prp
+  )
   
   # -------------------------------------------------------------------------
   # 5. Extract a Balanced, Stratified 10% Subset for Grid Tuning
   # -------------------------------------------------------------------------
   # With ~1M rows, running 10-fold CV over a grid of 25 is computationally redundant.
   # We slice a representative 20% sample, group-stratified by our target outcome 
-  # (dna_outcome) to perfectly preserve baseline class prevalence.
+  # (dna_outcome) to preserve baseline class prevalence.
   set.seed(42) # Set seed for reproducible sampling
   
   train_engineered_tune <- train_engineered %>%

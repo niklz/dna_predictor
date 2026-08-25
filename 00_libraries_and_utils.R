@@ -61,6 +61,7 @@ aggregate_ethnicity_high_level <- function(x) {
 apply_custom_feature_engineering <- function(data) {
   data %>%
     mutate(
+      across(c(age_at_appointment, distance_km, lead_time_days), as.numeric),
       # --- 1. Your Original Feature Engineering ---
       ethnicity_clean = collect_ethnicity(ethnicity),
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),

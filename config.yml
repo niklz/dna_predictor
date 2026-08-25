@@ -1,5 +1,5 @@
 default:
-  model_ver: "DEV"
+  model_ver: "ver_1.0"
 
   # Model specs & features
   target_col: "dna_outcome"

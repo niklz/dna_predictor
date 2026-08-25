@@ -94,7 +94,7 @@ apply_custom_feature_engineering <- function(data) {
     # --- 3. Clean up raw columns (Replaces step_rm() to avoid workflow leaks) ---
     select(
       -appt_hour, -lead_time_days, -appt_date, -appt_month, 
-      -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_group
+      -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_at_appointment
     )
 }
 
@@ -274,4 +274,34 @@ find_optimal_ml_thresholds <- function(
     feasible            = is_feasible,
     enriched_pr_curve   = enriched_pr
   )))
+}
+
+
+# Centralised recipe builder to prevent train-serve skew and environment leakage [cite: 11]
+build_trial_recipe <- function(data_template, target_col, fct_other_prp = 0.05) {
+  
+  formula_obj <- as.formula(paste(target_col, "~ ."))
+  # Crucial: Strip parent environment references to keep the object lightweight [cite: 11]
+  environment(formula_obj) <- baseenv() 
+  
+  recipe(formula_obj, data = data_template) %>%
+    update_role(dim_patient_id, new_role = "id") %>%
+    step_novel(all_nominal_predictors()) %>%
+    step_unknown(all_nominal_predictors(), -imd) %>%
+    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+    
+    # Target encode high-cardinality nominative features [cite: 236]
+    step_lencode_mixed(
+      c(
+        "clinic_location",
+        "clinic_code",
+        "site_code",
+        "registered_gp_practice",
+        "national_spec_code"
+      ),
+      outcome = vars(!!sym(target_col))
+    ) %>%
+    
+    step_nzv(all_predictors()) %>%
+    step_impute_median(all_numeric_predictors())
 }

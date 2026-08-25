@@ -49,7 +49,7 @@ default:
   new_appointment_path: "data/new_clinic_appointments.csv"
 
   # Execution flags
-  tune_model: true
+  tune_model: false
   num_threads: 4
   num_workers: 6
 

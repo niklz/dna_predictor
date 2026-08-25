@@ -8,7 +8,7 @@ local({
   # -------------------------------------------------------------------------
   # 2. Load & Engineer Base Data
   # -------------------------------------------------------------------------
-  dataset <- read.csv("data/DNA_20260818.csv")
+  dataset <- read.csv("data/DNA_20260818.csv", na.strings = c("NA", "NULL"))
   
   model_data <- dataset %>%
     mutate(

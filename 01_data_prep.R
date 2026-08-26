@@ -53,6 +53,8 @@ local({
   # The engineering step now builds 'imd' cleanly on the fly
   train_engineered <- apply_custom_feature_engineering(train_raw)
   
+  data_template <- head(train_engineered, 0)
+  
   dna_recipe <- build_trial_recipe(
     data_template = data_template,
     target_col    = conf$target_col,

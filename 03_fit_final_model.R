@@ -1,5 +1,4 @@
 source("00_libraries_and_utils.R")
-source("01_data_prep.R")
 conf <- config::get()
 
 train_data <- readRDS("data/processed/train_engineered.rds")

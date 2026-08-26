@@ -14,7 +14,7 @@ model_tune_results <- local({
   rf_spec <- rand_forest(mtry = tune(),
                          trees = tune(),
                          min_n = tune()) %>%
-    set_engine("ranger", importance = "permutation") %>%
+    set_engine("ranger") %>%
     set_mode("classification")
   
   

@@ -94,24 +94,28 @@ final_manifest <- new_appointments %>%
     trial_arm = "not in trial"
   )
 
-# Extract indices of the high-risk cohort
-high_risk_indices <- which(final_manifest$risk_profile == "high-risk")
-n_high_risk       <- length(high_risk_indices)
-
-if (n_high_risk > 0) {
-  # Calculate the exact number of control patients needed based on your allocation ratio
-  n_control <- round(n_high_risk * allocation_ratio)
-  n_interv  <- n_high_risk - n_control
-  
-  # Create a perfectly balanced vector of assignments and shuffle it randomly
-  balanced_arms <- sample(c(
-    rep("control", n_control),
-    rep("intervention", n_interv)
-  ))
-  
-  # Assign the balanced arms back to the high-risk patients
-  final_manifest$trial_arm[high_risk_indices] <- balanced_arms
-}
+final_manifest <- final_manifest %>%
+  group_by(clinic_code) %>%
+  group_modify(~ {
+    # Isolate this specific clinic's high-risk indices
+    high_risk_indices <- which(.x$risk_profile == "high-risk")
+    n_high_risk       <- length(high_risk_indices)
+    
+    if (n_high_risk > 0) {
+      n_control <- round(n_high_risk * allocation_ratio)
+      n_interv  <- n_high_risk - n_control
+      
+      # Perfect 50/50 shuffle block for this clinic [cite: 331]
+      balanced_arms <- sample(c(
+        rep("control", n_control),
+        rep("intervention", n_interv)
+      ))
+      
+      .x$trial_arm[high_risk_indices] <- balanced_arms
+    }
+    .x
+  }) %>%
+  ungroup()
 
 # -------------------------------------------------------------------------
 # 7. Generate primary keys, collapse flags, and map variables
@@ -149,7 +153,7 @@ final_manifest <- final_manifest %>%
     appointment_datetime    = appt_dttm,
     clinic_code             = clinic_code,  
     gp_practice             = registered_gp_practice,
-    age                     = age_at_appointment,
+    age                     = age_group,
     sex                     = gender,
     ethnicity               = ethnicity,
     imd                     = index_multiple_deprivation_decile,

@@ -47,7 +47,7 @@ raw_new_appointments_path <- conf$new_appointment_path
 if (!file.exists(raw_new_appointments_path)) {
   # Fallback for dev environment testing
   if (file.exists("data/data_joined.RDS")) {
-    new_appointments <- read.csv("data/DNA_20260818.csv") %>% sample_n(400) %>% mutate(tumorsite = "Breast")
+    new_appointments <- read.csv("data/DNA_20260818.csv") %>% sample_n(400) %>% mutate(tumoursite = "Breast")
   } else {
     stop("New appointments file not found.")
   }
@@ -94,9 +94,9 @@ final_manifest <- new_appointments %>%
     trial_arm = "not in trial"
   )
 
-# Force-Balanced Split at the tumorsite level
+# Force-Balanced Split at the tumoursite level
 final_manifest <- final_manifest %>%
-  group_by(tumorsite) %>%
+  group_by(tumoursite) %>%
   group_modify(~ {
     # Isolate this specific clinic's high-risk indices
     high_risk_indices <- which(.x$risk_profile == "high-risk")
@@ -154,7 +154,7 @@ final_manifest <- final_manifest %>%
     appointment_datetime    = appt_dttm,
     appointment_day_of_week = format(as.Date(appt_dttm), "%A"),
     clinic_code             = clinic_code,  
-    tumorsite               = tumorsite,
+    tumoursite               = tumoursite,
     gp_practice             = registered_gp_practice,
     age                     = age_at_appointment,
     sex                     = gender,
@@ -242,7 +242,7 @@ local({
   
   mapping_dict <- data.frame(
     Variable_Name = c(
-      "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumorsite", "gp_practice",  
+      "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumoursite", "gp_practice",  
       "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm",  
       "date_model_run", "model_version", "patient_landline_number", "patient_mobile_number",
       "tier1_text_timestamp", "tier2_text_timestamp", "t2_patient_intent", "tier3_phone_attempt", "tier3_call_timestamp",
@@ -251,7 +251,7 @@ local({
     ),
     Description = c(
       "Appointment ID.", "Unique patient identifier.", "NHS number.", "Scheduled date and time.", "Day of the week of the appointment.",
-      "Clinic code.", "Primary tumor site/group.", "GP practice.", "Patient age.", "Patient sex.", "Ethnicity record.",
+      "Clinic code.", "Primary tumour site/group.", "GP practice.", "Patient age.", "Patient sex.", "Ethnicity record.",
       "IMD decile.", "Active accessibility & vulnerability flags.", "Calibrated risk probability.",
       "Risk profile label.", "Randomised trial arm.", "Model execution date.", "Model version.",
       "Landline number.", "Mobile number.", "Tier 1 SMS timestamp.", "Tier 2 SMS timestamp.", "Patient intent derived from T2 interactive text.", "Phone outreach attempt.",
@@ -301,7 +301,7 @@ local({
   addStyle(wb, sheet_name_rost, style_kpi_value, rows = 4, cols = 5)
   
   headers <- c(
-    "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumorsite", "gp_practice",  
+    "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumoursite", "gp_practice",  
     "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm",  
     "date_model_run", "model_version", "patient_landline_number", "patient_mobile_number",
     "tier1_text_timestamp", "tier2_text_timestamp", "t2_patient_intent", "tier3_phone_attempt", "tier3_call_timestamp", 
@@ -315,7 +315,7 @@ local({
   # Explicitly pull all columns in exact matching order
   export_roster_data <- final_manifest %>%  
     select(
-      appointment_id, patient_id, nhs_number, appointment_datetime, appointment_day_of_week, clinic_code, tumorsite, gp_practice,  
+      appointment_id, patient_id, nhs_number, appointment_datetime, appointment_day_of_week, clinic_code, tumoursite, gp_practice,  
       age, sex, ethnicity, imd, accessibility_flags, dna_risk, risk_label, trial_arm,
       date_model_run, model_version, patient_landline_number, patient_mobile_number
     ) %>%
@@ -432,7 +432,7 @@ local({
   setColWidths(wb, sheet_name_rost, cols = 4, widths = 26)   # appointment_datetime (WIDENED)
   setColWidths(wb, sheet_name_rost, cols = 5, widths = 22)   # appointment_day_of_week (WIDENED)
   setColWidths(wb, sheet_name_rost, cols = 6, widths = 14)   # clinic_code
-  setColWidths(wb, sheet_name_rost, cols = 7, widths = 20)   # tumorsite (NEW)
+  setColWidths(wb, sheet_name_rost, cols = 7, widths = 20)   # tumoursite (NEW)
   setColWidths(wb, sheet_name_rost, cols = 8, widths = 26)   # gp_practice
   setColWidths(wb, sheet_name_rost, cols = 9, widths = 10)   # age
   setColWidths(wb, sheet_name_rost, cols = 10, widths = 10)  # sex
@@ -484,4 +484,3 @@ local({
   cat("====================================================\n\n")
   
 })
-

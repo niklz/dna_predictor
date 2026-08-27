@@ -47,7 +47,7 @@ raw_new_appointments_path <- conf$new_appointment_path
 if (!file.exists(raw_new_appointments_path)) {
   # Fallback for dev environment testing
   if (file.exists("data/data_joined.RDS")) {
-    new_appointments <- read.csv("data/DNA_20260818.csv") %>% sample_n(400)
+    new_appointments <- read.csv("data/DNA_20260818.csv") %>% sample_n(400) %>% mutate(tumorsite = "Breast")
   } else {
     stop("New appointments file not found.")
   }
@@ -94,8 +94,9 @@ final_manifest <- new_appointments %>%
     trial_arm = "not in trial"
   )
 
+# Force-Balanced Split at the tumorsite level
 final_manifest <- final_manifest %>%
-  group_by(clinic_code) %>%
+  group_by(tumorsite) %>%
   group_modify(~ {
     # Isolate this specific clinic's high-risk indices
     high_risk_indices <- which(.x$risk_profile == "high-risk")
@@ -105,7 +106,7 @@ final_manifest <- final_manifest %>%
       n_control <- round(n_high_risk * allocation_ratio)
       n_interv  <- n_high_risk - n_control
       
-      # Perfect 50/50 shuffle block for this clinic [cite: 331]
+      # Perfect 50/50 shuffle block for this specific track
       balanced_arms <- sample(c(
         rep("control", n_control),
         rep("intervention", n_interv)
@@ -148,12 +149,14 @@ final_manifest <- final_manifest %>%
   select(-all_of(vulnerability_cols), -v_vals) %>%
   mutate(
     appointment_id          = op_appt_id,
-    patient_id              = dim_patient_id,
+    patient_id              = pasid,
     nhs_number              = nhsnumber,
     appointment_datetime    = appt_dttm,
+    appointment_day_of_week = format(as.Date(appt_dttm), "%A"),
     clinic_code             = clinic_code,  
+    tumorsite               = tumorsite,
     gp_practice             = registered_gp_practice,
-    age                     = age_group,
+    age                     = age_at_appointment,
     sex                     = gender,
     ethnicity               = ethnicity,
     imd                     = index_multiple_deprivation_decile,
@@ -163,14 +166,16 @@ final_manifest <- final_manifest %>%
     date_model_run          = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
     model_version           = ifelse(!is.null(conf$model_ver), conf$model_ver, "v1.1"),
     
+    patient_landline_number = str_c("0", homephonenumber),
     patient_mobile_number   = str_c("0", mobilephonenumber),
     tier1_text_timestamp    = "",
     tier2_text_timestamp    = "",
+    t2_patient_intent       = "",
     tier3_phone_attempt     = "",
     tier3_call_timestamp    = "",
     number_of_call_attempts = "",
-    call_duration           = "",
-    patient_intent          = "",
+    call_duration_minutes   = "",
+    t3_patient_intent       = "",
     call_notes              = "",
     appointment_outcome     = ""
   )
@@ -179,6 +184,17 @@ final_manifest <- final_manifest %>%
 # 8. Output operational lists & Excel workbook
 # -------------------------------------------------------------------------
 local({
+  
+  style_active_datetime <- createStyle(
+    fontName = "Calibri", 
+    fontSize = 11, 
+    fgFill = "#DCE6F1", 
+    halign = "center", 
+    border = c("top", "bottom", "left", "right"), 
+    borderStyle = "thin", 
+    numFmt = "yyyy-mm-dd hh:mm" # Forces a strict datetime visual format
+  )
+  
   output_manifest_path <- "outputs/weekly_scored_appointments.csv"
   dir.create("outputs", showWarnings = FALSE)
   write.csv(final_manifest, file = output_manifest_path, row.names = FALSE)
@@ -226,23 +242,23 @@ local({
   
   mapping_dict <- data.frame(
     Variable_Name = c(
-      "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "clinic_code", "gp_practice",  
+      "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumorsite", "gp_practice",  
       "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm",  
-      "date_model_run", "model_version", "patient_mobile_number",
-      "tier1_text_timestamp", "tier2_text_timestamp", "tier3_phone_attempt", "tier3_call_timestamp",
-      "number_of_call_attempts", "call_duration",
-      "patient_intent", "call_notes", "appointment_outcome"
+      "date_model_run", "model_version", "patient_landline_number", "patient_mobile_number",
+      "tier1_text_timestamp", "tier2_text_timestamp", "t2_patient_intent", "tier3_phone_attempt", "tier3_call_timestamp",
+      "number_of_call_attempts", "call_duration_minutes",
+      "t3_patient_intent", "call_notes", "appointment_outcome"
     ),
     Description = c(
-      "Appointment ID.", "Unique patient identifier.", "NHS number.", "Scheduled date and time.",
-      "Clinic code.", "GP practice.", "Patient age.", "Patient sex.", "Ethnicity record.",
+      "Appointment ID.", "Unique patient identifier.", "NHS number.", "Scheduled date and time.", "Day of the week of the appointment.",
+      "Clinic code.", "Primary tumor site/group.", "GP practice.", "Patient age.", "Patient sex.", "Ethnicity record.",
       "IMD decile.", "Active accessibility & vulnerability flags.", "Calibrated risk probability.",
       "Risk profile label.", "Randomised trial arm.", "Model execution date.", "Model version.",
-      "Mobile number.", "Tier 1 SMS timestamp.", "Tier 2 SMS timestamp.", "Phone outreach attempt.",
+      "Landline number.", "Mobile number.", "Tier 1 SMS timestamp.", "Tier 2 SMS timestamp.", "Patient intent derived from T2 interactive text.", "Phone outreach attempt.",
       "Phone call timestamp.", "Number of manual call attempts.", "Duration of the call (minutes).",
-      "Patient intent.", "Coordinator notes.", "Appointment outcome."
+      "Patient intent derived from T3 coordinator call.", "Coordinator notes.", "Appointment outcome."
     ),
-    Data_Source = rep("System/Log", 26)
+    Data_Source = rep("System/Log", 30)
   )
   
   writeData(wb, sheet_name_inst, t(c("Variable name", "Variable description", "Data source")), startCol = 1, startRow = 5, colNames = FALSE)
@@ -250,7 +266,7 @@ local({
   writeData(wb, sheet_name_inst, mapping_dict, startCol = 1, startRow = 6, colNames = FALSE)
   
   # .........................................................................
-  # SHEET 2: WEEKLY OUTREACH ROSTER (26 columns total)
+  # SHEET 2: WEEKLY OUTREACH ROSTER (30 columns total)
   # .........................................................................
   sheet_name_rost <- "Weekly outreach roster"
   addWorksheet(wb, sheet_name_rost)
@@ -262,45 +278,46 @@ local({
   writeData(wb, sheet_name_rost, "Weekly coordination outreach roster", startCol = 1, startRow = 1)
   addStyle(wb, sheet_name_rost, style_title, rows = 1, cols = 1)
   
-  # KPI blocks referencing correct columns (trial_arm is column 14 / N)
+  # KPI blocks referencing correct columns (risk_label is column 15 / O, trial_arm is column 16 / P)
   writeData(wb, sheet_name_rost, "Total high-risk cohort:", startCol = 1, startRow = 3)
   addStyle(wb, sheet_name_rost, style_kpi_label, rows = 3, cols = 1)
-  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(M%d:M%d, \"high-risk\")", start_row, end_row), startCol = 2, startRow = 3)
+  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(O%d:O%d, \"high-risk\")", start_row, end_row), startCol = 2, startRow = 3)
   addStyle(wb, sheet_name_rost, style_kpi_value, rows = 3, cols = 2)
   
   writeData(wb, sheet_name_rost, "Intervention arm (active calls):", startCol = 1, startRow = 4)
   addStyle(wb, sheet_name_rost, style_kpi_label, rows = 4, cols = 1)
-  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(N%d:N%d, \"intervention\")", start_row, end_row), startCol = 2, startRow = 4)
+  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(P%d:P%d, \"intervention\")", start_row, end_row), startCol = 2, startRow = 4)
   addStyle(wb, sheet_name_rost, style_kpi_value, rows = 4, cols = 2)
   
   writeData(wb, sheet_name_rost, "Control arm (passive standard care):", startCol = 4, startRow = 3)
   addStyle(wb, sheet_name_rost, style_kpi_label, rows = 3, cols = 4)
-  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(N%d:N%d, \"control\")", start_row, end_row), startCol = 5, startRow = 3)
+  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(P%d:P%d, \"control\")", start_row, end_row), startCol = 5, startRow = 3)
   addStyle(wb, sheet_name_rost, style_kpi_value, rows = 3, cols = 5)
   
+  # Outreach completed is based on tier3_phone_attempt which is now column 24 / X
   writeData(wb, sheet_name_rost, "Outreach completed:", startCol = 4, startRow = 4)
   addStyle(wb, sheet_name_rost, style_kpi_label, rows = 4, cols = 4)
-  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(T%d:T%d, \"yes\")", start_row, end_row), startCol = 5, startRow = 4)
+  writeFormula(wb, sheet_name_rost, sprintf("COUNTIF(X%d:X%d, \"yes\")", start_row, end_row), startCol = 5, startRow = 4)
   addStyle(wb, sheet_name_rost, style_kpi_value, rows = 4, cols = 5)
   
   headers <- c(
-    "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "clinic_code", "gp_practice",  
+    "appointment_id", "patient_id", "nhs_number", "appointment_datetime", "appointment_day_of_week", "clinic_code", "tumorsite", "gp_practice",  
     "age", "sex", "ethnicity", "imd", "accessibility_flags", "dna_risk", "risk_label", "trial_arm",  
-    "date_model_run", "model_version", "patient_mobile_number",
-    "tier1_text_timestamp", "tier2_text_timestamp", "tier3_phone_attempt", "tier3_call_timestamp", 
-    "number_of_call_attempts", "call_duration", 
-    "patient_intent", "call_notes", "appointment_outcome"
+    "date_model_run", "model_version", "patient_landline_number", "patient_mobile_number",
+    "tier1_text_timestamp", "tier2_text_timestamp", "t2_patient_intent", "tier3_phone_attempt", "tier3_call_timestamp", 
+    "number_of_call_attempts", "call_duration_minutes", 
+    "t3_patient_intent", "call_notes", "appointment_outcome"
   )
   
   writeData(wb, sheet_name_rost, t(headers), startCol = 1, startRow = 8, colNames = FALSE)
-  addStyle(wb, sheet_name_rost, style_header, rows = 8, cols = 1:26)
+  addStyle(wb, sheet_name_rost, style_header, rows = 8, cols = 1:30)
   
   # Explicitly pull all columns in exact matching order
   export_roster_data <- final_manifest %>%  
     select(
-      appointment_id, patient_id, nhs_number, appointment_datetime, clinic_code, gp_practice,  
+      appointment_id, patient_id, nhs_number, appointment_datetime, appointment_day_of_week, clinic_code, tumorsite, gp_practice,  
       age, sex, ethnicity, imd, accessibility_flags, dna_risk, risk_label, trial_arm,
-      date_model_run, model_version, patient_mobile_number
+      date_model_run, model_version, patient_landline_number, patient_mobile_number
     ) %>%
     mutate(
       # Set text reminders, call variables, and outcome fields dynamically based on trial arms
@@ -309,6 +326,11 @@ local({
         TRUE ~ ""
       ),
       tier2_text_timestamp = case_when(
+        trial_arm == "not in trial" ~ "N/A - Not in Trial",
+        TRUE ~ ""
+      ),
+      t2_patient_intent = case_when(
+        trial_arm == "control" ~ "N/A - Control",
         trial_arm == "not in trial" ~ "N/A - Not in Trial",
         TRUE ~ ""
       ),
@@ -327,12 +349,12 @@ local({
         trial_arm == "not in trial" ~ "N/A - Not in Trial",
         TRUE ~ ""
       ),
-      call_duration = case_when(
+      call_duration_minutes = case_when(
         trial_arm == "control" ~ "N/A - Control",
         trial_arm == "not in trial" ~ "N/A - Not in Trial",
         TRUE ~ ""
       ),
-      patient_intent = case_when(
+      t3_patient_intent = case_when(
         trial_arm == "control" ~ "N/A - Control",
         trial_arm == "not in trial" ~ "N/A - Not in Trial",
         TRUE ~ ""
@@ -355,61 +377,86 @@ local({
   control_rows      <- which(final_manifest$trial_arm == "control") + start_row - 1
   not_in_trial_rows <- which(final_manifest$trial_arm == "not in trial") + start_row - 1
   
-  # Base column formatting styles (Shifted col indices to account for the +2 new variables)
-  addStyle(wb, sheet_name_rost, style_text_left, rows = start_row:end_row, cols = c(1, 2, 3, 4, 5, 6, 8, 9, 11, 13, 14, 15, 16, 17, 18, 19, 21, 25, 26), gridExpand = TRUE)
-  addStyle(wb, sheet_name_rost, style_num_right, rows = start_row:end_row, cols = c(7, 10), gridExpand = TRUE)
-  addStyle(wb, sheet_name_rost, style_prob_pct, rows = start_row:end_row, cols = 12, gridExpand = TRUE)
+  # Base column formatting styles 
+  # (STOP at column 20, leaving columns 21-30 blank for our conditional group styling to take over)
+  addStyle(wb, sheet_name_rost, style_text_left, rows = start_row:end_row, cols = c(1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 15, 16, 17, 18, 19, 20), gridExpand = TRUE)
+  addStyle(wb, sheet_name_rost, style_num_right, rows = start_row:end_row, cols = c(9, 12), gridExpand = TRUE)
+  addStyle(wb, sheet_name_rost, style_prob_pct, rows = start_row:end_row, cols = 14, gridExpand = TRUE)
   
-  # Conditional formatting inputs (Columns 18 to 26 for manual logs)
+  # -------------------------------------------------------------------------
+  # Group-Based Vectorized Conditional Formatting
+  # -------------------------------------------------------------------------
+  
+  # Conditional formatting inputs (Columns 21 to 30 for manual logs)
   if (length(intervention_rows) > 0) {
-    addStyle(wb, sheet_name_rost, style_active_input, rows = intervention_rows, cols = 18:26, gridExpand = TRUE)
+    # Apply standard blue input style to regular text/dropdown columns
+    addStyle(wb, sheet_name_rost, style_active_input, rows = intervention_rows, cols = c(23, 24, 26, 27, 28, 29, 30), gridExpand = TRUE)
+    
+    # Apply the strict datetime style to the timestamp columns (T1 Text, T2 Text, T3 Call)
+    addStyle(wb, sheet_name_rost, style_active_datetime, rows = intervention_rows, cols = c(21, 22, 25), gridExpand = TRUE)
   }
   
   if (length(control_rows) > 0) {
-    addStyle(wb, sheet_name_rost, style_active_input, rows = control_rows, cols = c(18, 19, 26), gridExpand = TRUE)
-    addStyle(wb, sheet_name_rost, style_control_row, rows = control_rows, cols = 20:25, gridExpand = TRUE)
+    # Controls only receive passive texts and an ultimate outcome track
+    addStyle(wb, sheet_name_rost, style_active_datetime, rows = control_rows, cols = c(21, 22), gridExpand = TRUE)
+    addStyle(wb, sheet_name_rost, style_active_input, rows = control_rows, cols = 30, gridExpand = TRUE)
+    
+    # Grey out intent, phone logic, and call notes
+    addStyle(wb, sheet_name_rost, style_control_row, rows = control_rows, cols = 23:29, gridExpand = TRUE)
   }
   
   if (length(not_in_trial_rows) > 0) {
-    addStyle(wb, sheet_name_rost, style_control_row, rows = not_in_trial_rows, cols = 18:26, gridExpand = TRUE)
+    # Not in Trial: Highlight all manual logging fields (21:30) in gray
+    addStyle(wb, sheet_name_rost, style_control_row, rows = not_in_trial_rows, cols = 21:30, gridExpand = TRUE)
   }
   
-  # Corrected Data Validation Dropdowns mapped to new matching column numbers 
-  # (20 = tier3_phone_attempt, 24 = patient_intent, 26 = appointment_outcome)
-  dataValidation(wb, sheet_name_rost, col = 20, rows = start_row:end_row, type = "list", value = '\"yes,no\"')
-  dataValidation(wb, sheet_name_rost, col = 24, rows = start_row:end_row, type = "list", value = '\"confirm,cancel,reschedule,no_response\"')
-  dataValidation(wb, sheet_name_rost, col = 26, rows = start_row:end_row, type = "list", value = '\"Attended,DNA,Cancelled,Rescheduled\"')
+  # Added data validation error prevention logic shifted to new target columns
+  dataValidation(wb, sheet_name_rost, col = 23, rows = start_row:end_row, type = "list", value = '\"confirm,cancel,reschedule,no_response\"')
+  dataValidation(wb, sheet_name_rost, col = 24, rows = start_row:end_row, type = "list", value = '\"yes,no\"')
+  dataValidation(wb, sheet_name_rost, col = 26, rows = start_row:end_row, type = "whole", operator = "greaterThanOrEqual", value = "0")
+  dataValidation(wb, sheet_name_rost, col = 28, rows = start_row:end_row, type = "list", value = '\"confirm,cancel,reschedule,no_response\"')
+  dataValidation(wb, sheet_name_rost, col = 30, rows = start_row:end_row, type = "list", value = '\"Attended,DNA,Cancelled,Rescheduled\"')
   
-  # Column width padding
+  # STRICT DATETIME VALIDATION (Rejecting bare times like "3pm")
+  dataValidation(wb, sheet_name_rost, col = 21, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
+  dataValidation(wb, sheet_name_rost, col = 22, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
+  dataValidation(wb, sheet_name_rost, col = 25, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
+  
+  # Activate AutoFilter on the header row (Applies dropdowns to all columns)
+  addFilter(wb, sheet_name_rost, row = 8, cols = 1:30)
+  
+  # Column width padding mapped to the new 30 column structure
   setColWidths(wb, sheet_name_rost, cols = 1, widths = 36)   # appointment_id
   setColWidths(wb, sheet_name_rost, cols = 2, widths = 14)   # patient_id
   setColWidths(wb, sheet_name_rost, cols = 3, widths = 14)   # nhs_number
-  setColWidths(wb, sheet_name_rost, cols = 4, widths = 22)   # appointment_datetime
-  setColWidths(wb, sheet_name_rost, cols = 5, widths = 14)   # clinic_code
-  setColWidths(wb, sheet_name_rost, cols = 6, widths = 26)   # gp_practice
-  setColWidths(wb, sheet_name_rost, cols = 7, widths = 10)   # age
-  setColWidths(wb, sheet_name_rost, cols = 8, widths = 10)   # sex
-  setColWidths(wb, sheet_name_rost, cols = 9, widths = 16)   # ethnicity
-  setColWidths(wb, sheet_name_rost, cols = 10, widths = 10)  # imd
-  setColWidths(wb, sheet_name_rost, cols = 11, widths = 38)  # accessibility_flags
-  setColWidths(wb, sheet_name_rost, cols = 12, widths = 14)  # dna_risk
-  setColWidths(wb, sheet_name_rost, cols = 13, widths = 14)  # risk_label
-  setColWidths(wb, sheet_name_rost, cols = 14, widths = 14)  # trial_arm
-  setColWidths(wb, sheet_name_rost, cols = 15, widths = 22)  # date_model_run
-  setColWidths(wb, sheet_name_rost, cols = 16, widths = 15)  # model_version
-  setColWidths(wb, sheet_name_rost, cols = 17, widths = 20)  # patient_mobile_number
-  setColWidths(wb, sheet_name_rost, cols = 18:19, widths = 22) # manual text timestamps
-  setColWidths(wb, sheet_name_rost, cols = 20:24, widths = 22) # manual call logging blanks (includes new columns)
-  setColWidths(wb, sheet_name_rost, cols = 25, widths = 30)  # call_notes
-  setColWidths(wb, sheet_name_rost, cols = 26, widths = 22)  # appointment_outcome
+  setColWidths(wb, sheet_name_rost, cols = 4, widths = 26)   # appointment_datetime (WIDENED)
+  setColWidths(wb, sheet_name_rost, cols = 5, widths = 22)   # appointment_day_of_week (WIDENED)
+  setColWidths(wb, sheet_name_rost, cols = 6, widths = 14)   # clinic_code
+  setColWidths(wb, sheet_name_rost, cols = 7, widths = 20)   # tumorsite (NEW)
+  setColWidths(wb, sheet_name_rost, cols = 8, widths = 26)   # gp_practice
+  setColWidths(wb, sheet_name_rost, cols = 9, widths = 10)   # age
+  setColWidths(wb, sheet_name_rost, cols = 10, widths = 10)  # sex
+  setColWidths(wb, sheet_name_rost, cols = 11, widths = 16)  # ethnicity
+  setColWidths(wb, sheet_name_rost, cols = 12, widths = 10)  # imd
+  setColWidths(wb, sheet_name_rost, cols = 13, widths = 38)  # accessibility_flags
+  setColWidths(wb, sheet_name_rost, cols = 14, widths = 14)  # dna_risk
+  setColWidths(wb, sheet_name_rost, cols = 15, widths = 14)  # risk_label
+  setColWidths(wb, sheet_name_rost, cols = 16, widths = 14)  # trial_arm
+  setColWidths(wb, sheet_name_rost, cols = 17, widths = 22)  # date_model_run
+  setColWidths(wb, sheet_name_rost, cols = 18, widths = 15)  # model_version
+  setColWidths(wb, sheet_name_rost, cols = 19:20, widths = 20) # manual phone numbers
+  setColWidths(wb, sheet_name_rost, cols = 21:22, widths = 26) # manual text timestamps (WIDENED)
+  setColWidths(wb, sheet_name_rost, cols = 23, widths = 22)  # t2_patient_intent
+  setColWidths(wb, sheet_name_rost, cols = 24:28, widths = 22) # manual call logging blanks
+  setColWidths(wb, sheet_name_rost, cols = 29, widths = 30)  # call_notes
+  setColWidths(wb, sheet_name_rost, cols = 30, widths = 22)  # appointment_outcome
   
   freezePane(wb, sheet_name_rost, firstActiveRow = 9, firstActiveCol = 2)
   # Safeguard: Recreate the system temp directory if Windows has cleaned it up
   dir.create(tempdir(), recursive = TRUE, showWarnings = FALSE)
   # Save workbook
-  output_excel_path <- "outputs/weekly_scored_appointments.xlsx"
+  output_excel_path <- str_c("outputs/weekly_scored_appointments_", format(Sys.Date()), ".xlsx")
   saveWorkbook(wb, file = output_excel_path, overwrite = TRUE)
-  
   
   # -------------------------------------------------------------------------
   # 9. Console report (Sentence Case)
@@ -437,3 +484,4 @@ local({
   cat("====================================================\n\n")
   
 })
+

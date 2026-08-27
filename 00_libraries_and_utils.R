@@ -637,7 +637,7 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
       date_model_run          = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
       model_version           = ifelse(!is.null(conf$model_ver), conf$model_ver, "v1.1"),
       
-      patient_landline_number = str_c("0", homephonenumber),
+      patient_landline_number = homephonenumber,
       patient_mobile_number   = str_c("0", mobilephonenumber),
       tier1_text_timestamp    = "",
       tier2_text_timestamp    = "",

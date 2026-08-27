@@ -23,14 +23,14 @@ new_appointments <- local({
 -- 18/08/26 KL Urgency changed to referral - Elise Sapsford
 
 --WITH cte_distance AS
---	(
+--             (
 --SELECT [Postcode_8_chars] AS sm1
 --      ,[Latitude_1m] AS sm_lat
 --      ,[Longitude_1m] AS sm_long
 --  FROM [UK_Health_Dimensions].[ODS].[Postcode_Grid_Refs_Eng_Wal_Sco_And_NI_SCD]
 --  WHERE Postcode_8_chars IN ('BS10 5NB')
 --  AND Effective_To IS NULL
---	)
+--             )
 
 DECLARE @RunDate DATE = GETDATE();
 SET DATEFIRST 1;
@@ -76,8 +76,8 @@ WITH ClinicSites AS (
    [Postcode_8_chars] AS sm1
       ,[Latitude_1m] AS sm_lat
       ,[Longitude_1m] AS sm_long
-	  ,ClinicSite
-	  ,ClinicPostcode
+                  ,ClinicSite
+                  ,ClinicPostcode
 
     FROM ClinicSites sp
 
@@ -93,7 +93,7 @@ SELECT DISTINCT
     a.PATIENT_ID                       AS dim_patient_id,
 a.LocalTreatmentFunctionCode       AS local_spec_code,
     a.TreatmentFunctionCode            AS national_spec_code,
-	a.AppointmentTypeCode              AS appointment_type_code,
+                a.AppointmentTypeCode              AS appointment_type_code,
     a.AppointmentType                  AS appointment_type,
 a.ConsultationMediaCode            AS consultation_media_code,
     a.ConsultationMedia                AS consultation_media,
@@ -102,24 +102,24 @@ a.AttendedStatusCode               AS attended_status_code,
 
 
   6371 * ACOS(COS(RADIANS(r.sm_lat)) * COS(RADIANS(ps.[Latitude_1m])) *
-				COS(RADIANS(ps.[Longitude_1m] - r.sm_long)) +
-				SIN(RADIANS(r.sm_lat)) * SIN(RADIANS(ps.[Latitude_1m]))
+                                                                COS(RADIANS(ps.[Longitude_1m] - r.sm_long)) +
+                                                                SIN(RADIANS(r.sm_lat)) * SIN(RADIANS(ps.[Latitude_1m]))
                 ) AS distance_km,
 
     CASE WHEN P.PatientPostcode = 'ZZ99 3VZ' THEN 1 ELSE 0 END AS nfa_ind   ,
-	CASE
-	WHEN a.AgeAtAppointment  <18 THEN '<18'
-	WHEN a.AgeAtAppointment  < 25 THEN '18-25'
-	WHEN AgeAtAppointment < 35 THEN '25-34'
-	WHEN AgeAtAppointment < 45 THEN '35-44'
-	WHEN AgeAtAppointment < 55 THEN '45-54'
-	WHEN AgeAtAppointment < 65 THEN '55-64'
-	WHEN AgeAtAppointment < 75 THEN '65-74'
-	WHEN AgeAtAppointment < 85 THEN '75-84'
-	WHEN AgeAtAppointment < 95 THEN '85-94'
-	ELSE '95+' END AS age_group,
+                CASE
+                WHEN a.AgeAtAppointment  <18 THEN '<18'
+                WHEN a.AgeAtAppointment  < 25 THEN '18-25'
+                WHEN AgeAtAppointment < 35 THEN '25-34'
+                WHEN AgeAtAppointment < 45 THEN '35-44'
+                WHEN AgeAtAppointment < 55 THEN '45-54'
+                WHEN AgeAtAppointment < 65 THEN '55-64'
+                WHEN AgeAtAppointment < 75 THEN '65-74'
+                WHEN AgeAtAppointment < 85 THEN '75-84'
+                WHEN AgeAtAppointment < 95 THEN '85-94'
+                ELSE '95+' END AS age_group,
     a.AgeAtAppointment                 AS age_at_appointment,
- p.EthnicityCode                    AS ethnicity_code,
+p.EthnicityCode                    AS ethnicity_code,
     p.Ethnicity                        AS ethnicity,
     p.Index_Multiple_Deprivation_Decile AS index_multiple_deprivation_decile,
 
@@ -169,14 +169,14 @@ ISNULL(Alerts.a_dementia, 0)                 AS a_dementia,
 
     a.ClinicCode                       AS clinic_code,
     a.ClinicLocation                   AS clinic_location
-	--,  CASE
- --          WHEN RAND(CHECKSUM(NEWID())) < 0.5 THEN 'Training'
- --          ELSE 'Testing' END AS test_train
+                --,  CASE
+--          WHEN RAND(CHECKSUM(NEWID())) < 0.5 THEN 'Training'
+--          ELSE 'Testing' END AS test_train
 
 ,a.EXTERNAL_ID
 ,HomePhoneNumber
 ,MobilePhoneNumber
-,ClinicName	,ClinicSessionCode	,ClinicSession
+,ClinicName     ,ClinicSessionCode      ,ClinicSession
 ,p.Surname
 ,a.AppointmentDTTM AS [Appt Date/Time]
 ,LocalTreatmentFunction
@@ -190,11 +190,11 @@ ISNULL(Alerts.a_dementia, 0)                 AS a_dementia,
             WHEN CAST(a.AppointmentDTTM AS DATE) > CAST(GETDATE() AS DATE) THEN  'Testing'
             ELSE 'Training'
         END AS test_train  -- testing = future, training = past
-		,[ReferralUrgencyCode] as UrgencyCode
-		,[ReferralUrgency] as Urgency
-		,OP_APPT_ID
-		,trim(left(P.PatientPostcode,4)) as PostalDistrict
-		,case when  clinicSession in
+                                ,[ReferralUrgencyCode] as UrgencyCode
+                                ,[ReferralUrgency] as Urgency
+                                ,OP_APPT_ID
+                                ,trim(left(P.PatientPostcode,4)) as PostalDistrict
+                                ,case when  clinicSession in
 (
 'BBS F2F-Gastro Surgery Upper GI -AdHoc',
 'BBS F2F-Gastro Surgery UpperGI Surg REG -MTWHF E1W',
@@ -205,11 +205,11 @@ ISNULL(Alerts.a_dementia, 0)                 AS a_dementia,
 ) then 'Yes' else 'No' end as IncludeClinics
 
 ,CASE TreatmentFunctionCode
-	WHEN '101' THEN 'Urology'
-	WHEN '301' THEN 'Upper GI'
-	WHEN '502' THEN 'Gynaecology'
-	WHEN '103' THEN 'Breast'
-	ELSE 'Unknown'
+                WHEN '101' THEN 'Urology'
+                WHEN '301' THEN 'Upper GI'
+                WHEN '502' THEN 'Gynaecology'
+                WHEN '103' THEN 'Breast'
+                ELSE 'Unknown'
 END AS TumourSite
 
 
@@ -246,26 +246,33 @@ LEFT JOIN (
 ) Alerts
     ON p.PATIENT_ID = Alerts.PATIENT_ID
 
-			OUTER APPLY (
-					    SELECT COUNT(*) AS dna_count
-	    FROM  nhs_trust_careflow_reporting.CFL.tbl_OP_APPOINTMENTS AS HIST_OP WITH (NOLOCK)
-	    WHERE HIST_OP.PATIENT_ID = a.PATIENT_ID
-	      AND HIST_OP.AppointmentDTTM < a.AppointmentDTTM  -- Only count past appointments
-	      -- Use IN here to handle multiple IDs mapped to NHS_ID '3'
-	      AND HIST_OP.AttendedStatus IN ('DNA (Not Specified)')
-	      AND HIST_OP.AppointmentDTTM >= DATEADD(YEAR, -1, a.AppointmentDTTM)
-		  ) AS hist
+                                                OUTER APPLY (
+                                                                                    SELECT COUNT(*) AS dna_count
+                    FROM  nhs_trust_careflow_reporting.CFL.tbl_OP_APPOINTMENTS AS HIST_OP WITH (NOLOCK)
+                    WHERE HIST_OP.PATIENT_ID = a.PATIENT_ID
+                      AND HIST_OP.AppointmentDTTM < a.AppointmentDTTM  -- Only count past appointments
+                      -- Use IN here to handle multiple IDs mapped to NHS_ID '3'
+                      AND HIST_OP.AttendedStatus IN ('DNA (Not Specified)')
+                      AND HIST_OP.AppointmentDTTM >= DATEADD(YEAR, -1, a.AppointmentDTTM)
+                                  ) AS hist
 
-			WHERE 1=1   
-			-- w/c 2 weeks time
-			and CAST(a.AppointmentDTTM AS DATE) >= DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE)))  -- w/c 2 weeks time
-			AND CAST(a.AppointmentDTTM AS DATE) < DATEADD(DAY, 7,DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE))))			
-			
-			--CAST(a.AppointmentDTTM AS DATE)>= cast(getdate() as date)
-			--and  CAST(a.AppointmentDTTM AS DATE)<= cast(getdate()+21 as date)
-			AND a.TreatmentFunctionCode IN ('101','301','502','103')
-			and [ReferralUrgencyCode] = '3'
-			and AttendedStatusCode = 0"
+                                                WHERE 1=1   
+                                WHERE 1=1   
+                                                -- w/c 2 weeks time
+                                                --and CAST(a.AppointmentDTTM AS DATE) >= DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE)))  -- w/c 2 weeks time
+                                                --AND CAST(a.AppointmentDTTM AS DATE) < DATEADD(DAY, 7,DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE))))  
+                                                
+
+                                                -- w/c 1 weeks time
+                                                and CAST(a.AppointmentDTTM AS DATE) >= DATEADD(WEEK, 1,DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE)))
+                                                AND CAST(a.AppointmentDTTM AS DATE) < DATEADD(DAY, 7, DATEADD(WEEK, 1,DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE))))                              
+                                                
+                                                --CAST(a.AppointmentDTTM AS DATE)>= cast(getdate() as date)
+                                                --and  CAST(a.AppointmentDTTM AS DATE)<= cast(getdate()+21 as date)
+                                                AND a.TreatmentFunctionCode IN ('101','301','502','103')
+                                                and [ReferralUrgencyCode] = '3'
+                                                and AttendedStatusCode = 0"
+
   )
 dbDisconnect(con)
 dataset

@@ -59,6 +59,15 @@ aggregate_ethnicity_high_level <- function(x) {
   )
 }
 
+parse_appt_date <- function(x) {
+  if (inherits(x, "POSIXt") || inherits(x, "Date")) {
+    return(as.Date(x))
+  }
+  # Gracefully parses character formats (e.g. UK "DD/MM/YYYY" or ISO "YYYY-MM-DD")
+  parsed <- lubridate::parse_date_time(x, orders = c("dmy HMS", "ymd HMS", "dmy", "ymd"))
+  return(as.Date(parsed))
+}
+
 apply_custom_feature_engineering <- function(data) {
   data %>%
     mutate(
@@ -68,7 +77,7 @@ apply_custom_feature_engineering <- function(data) {
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
       ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
-      appt_date = as.Date(substring(appt_month, 1, 10), format = "%d/%m/%Y"),
+      appt_date = parse_appt_date(appt_month),
       # appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
       lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
@@ -534,6 +543,31 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
 }
 
 
+
+standardise_phone_number <- function(phone_col) {
+  # 1. Coerce to character and strip any accidental whitespace
+  phone_char <- stringr::str_trim(as.character(phone_col))
+  
+  # 2. Identify which numbers are valid but missing their leading "0" [cite: 120]
+  # (Must not be NA, empty, and must not already start with "0")
+  needs_zero <- !is.na(phone_char) & 
+    phone_char != "" & 
+    phone_char != "NA" & 
+    !stringr::str_starts(phone_char, "0")
+  
+  # 3. Create the output vector
+  output_phone <- phone_char
+  output_phone[needs_zero] <- stringr::str_c("0", phone_char[needs_zero])
+  
+  # 4. Clean up NAs/blanks so they display as empty cells in Excel [cite: 110]
+  # (Prevents ugly "0NA" or "NA" strings from appearing in the coordinator's roster)
+  output_phone[is.na(phone_char) | phone_char == "" | phone_char == "NA"] <- ""
+  
+  return(output_phone)
+}
+
+
+
 generate_appointment_manifest <- function(new_appointments, op_threshold, rf_model, rf_calibrator, conf) {
   
   # 1. Force lowercase column names to prevent case mismatches [cite: 68]
@@ -543,7 +577,7 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
   if ("tumorsite" %in% colnames(new_appointments)) {
     new_appointments <- rename(new_appointments, tumoursite = tumorsite)
   }
-  if (!"tumorsite" %in% colnames(new_appointments)) {
+  if (!"tumoursite" %in% colnames(new_appointments)) {
     new_appointments$tumoursite <- "Unknown" # Fallback group to prevent crashes
   }
   
@@ -622,7 +656,17 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
       appointment_id          = op_appt_id,
       patient_id              = pasid,
       nhs_number              = nhsnumber,
-      appointment_datetime    = appt_dttm,
+      # SAFE DATETIME CONVERSION: Standardises POSIXct and character inputs alike
+      appointment_datetime    = if (inherits(appt_dttm, "POSIXt")) {
+        format(appt_dttm, "%Y-%m-%d")
+      } else {
+        # Parse using the UK date order (dmy) first, then format
+        parsed_dt <- lubridate::parse_date_time(
+          appt_dttm, 
+          orders = c("dmy HM", "dmy HMS", "dmy")
+        )
+        format(parsed_dt, "%Y-%m-%d")
+      },
       appointment_day_of_week = format(as.Date(appt_dttm), "%A"),
       clinic_code             = clinic_code,  
       tumoursite               = tumoursite,
@@ -637,8 +681,8 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
       date_model_run          = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
       model_version           = ifelse(!is.null(conf$model_ver), conf$model_ver, "v1.1"),
       
-      patient_landline_number = homephonenumber,
-      patient_mobile_number   = str_c("0", mobilephonenumber),
+      patient_landline_number = standardise_phone_number(homephonenumber),
+      patient_mobile_number   = standardise_phone_number(mobilephonenumber),
       tier1_text_timestamp    = "",
       tier2_text_timestamp    = "",
       t2_patient_intent       = "",

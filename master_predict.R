@@ -39,6 +39,34 @@ message(sprintf("Target ML threshold locked at >= %.2f (Override active: %.2f ca
 # 3. Process SHOU Appointments [cite: 120]
 # -------------------------------------------------------------------------
 message("\n--- PROCESSING COHORT: SHOU ---")
+
+# -------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------
+# 1. Clear Last Week's Roster (Guarantees a clean state)
+# -------------------------------------------------------------------------
+if (file.exists(conf$new_appointment_path)) {
+  file.remove(conf$new_appointment_path)
+  message("Successfully cleared last week's raw appointments file.")
+}
+
+# 2. Run the Fetch Script
+# -------------------------------------------------------------------------
+message("Fetching fresh weekly appointments...")
+# This script should fetch the data and write it to conf$new_appointment_path
+source("05_fetch_new_appointments.R") 
+
+# -------------------------------------------------------------------------
+# 3. Strict Verification (The loud, fail-safe crash)
+# -------------------------------------------------------------------------
+if (!file.exists(conf$new_appointment_path)) {
+  stop(paste(
+    "\nCRITICAL ERROR: Fresh appointments file was not found at:", 
+    conf$new_appointment_path,
+    "\nThe fetch script failed or encountered an error. Halting pipeline immediately!"
+  ))
+}
+
 raw_shou_path <- conf$new_appointment_path
 
 if (!file.exists(raw_shou_path)) {
@@ -102,3 +130,4 @@ generate_excel_manifest(
 )
 
 message("\nInference Pipeline Completed Successfully! Scored weekly outputs are ready for coordinator distribution.")
+

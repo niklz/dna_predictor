@@ -257,7 +257,7 @@ LEFT JOIN (
                                   ) AS hist
 
                                                 WHERE 1=1   
-                                WHERE 1=1   
+                             
                                                 -- w/c 2 weeks time
                                                 --and CAST(a.AppointmentDTTM AS DATE) >= DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE)))  -- w/c 2 weeks time
                                                 --AND CAST(a.AppointmentDTTM AS DATE) < DATEADD(DAY, 7,DATEADD(WEEK, 2, DATEADD(DAY, 1 - DATEPART(WEEKDAY, @RunDate), CAST(@RunDate AS DATE))))  

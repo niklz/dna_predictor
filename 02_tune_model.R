@@ -41,7 +41,7 @@ conf <- config::get()
 
 model_tune_results <- local({
   # Load the engineered training data
-  train_data <- readRDS("data/processed/train_engineered_tune.rds")
+  train_data <- readRDS("data/processed/train_engineered_tune.rds") 
   
   rf_spec <- rand_forest(mtry = tune(),
                          trees = tune(),
@@ -73,7 +73,11 @@ model_tune_results <- local({
   # 3. Create Resamples and Parallel Grid Tuning
   # -------------------------------------------------------------------------
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = "dim_patient_id")
+  dna_folds <- group_vfold_cv(
+    train_data,
+    v = conf$cv_folds,
+    group = "dim_patient_id"
+    )
 
   
   # Set up the search grid (juice the recipe locally once)
@@ -117,10 +121,11 @@ model_tune_results <- local({
   toc()
   
   # -------------------------------------------------------------------------
-  # 4. Diagnostics & Plotting
+  # 4. Diagnostics & Plotting (Crash-Safe Edition)
   # -------------------------------------------------------------------------
   best_params <- fits %>% select_best(metric = "pr_auc")
   
+  # A. Hyperparameter trace and parallel coordinates (These are safe with collect_metrics!) [cite: 4, 5]
   hyper_param_trace <- fits %>%
     collect_metrics() %>%
     filter(.metric == "pr_auc") %>%
@@ -151,38 +156,51 @@ model_tune_results <- local({
       y = "Normalized Scale (0 to 1)"
     )
   
-  # Performance plots using the best params
-  roc_plot <-
-    collect_predictions(fits, parameters = best_params) |> (\(preds) {
-      auc_val <-
-        preds |> roc_auc(truth = !!sym(conf$target_col), .pred_DNA) |> pull(.estimate)
-      preds |>
-        roc_curve(truth = !!sym(conf$target_col), .pred_DNA) |>
-        ggplot(aes(x = 1 - specificity, y = sensitivity)) +
-        geom_abline(slope = 1,
-                    linetype = 2,
-                    alpha = 0.4) +
-        geom_path(linewidth = 1, color = "midnightblue") +
-        coord_equal() +
-        theme_bw() +
-        labs(title = "ROC curve", subtitle = paste0("ROC AUC: ", round(auc_val, 3)))
-    })()
+  # -------------------------------------------------------------------------
+  # B. RE-FIT THE WINNER TO HARVEST UNBIASED PREDICTIONS [cite: 413]
+  # -------------------------------------------------------------------------
+  # This runs in seconds and is 100% memory-safe!
+  message("Generating out-of-fold predictions for the best model...")
   
-  pr_plot <-
-    collect_predictions(fits, parameters = best_params) |> (\(preds) {
-      pr_val <-
-        preds |> pr_auc(truth = !!sym(conf$target_col), .pred_DNA) |> pull(.estimate)
-      preds |>
-        pr_curve(truth = !!sym(conf$target_col), .pred_DNA) %>%
-        ggplot(aes(x = recall, y = precision)) +
-        geom_path(linewidth = 1, color = "midnightblue") +
-        geom_hline(yintercept = 0.05,
-                   lty = 2,
-                   color = "red") +
-        coord_equal() +
-        theme_bw() +
-        labs(title = "PR Curve", subtitle = paste0("PR AUC: ", round(pr_val, 3)))
-    })()
+  best_workflow <- tuning_workflow %>% 
+    finalize_workflow(best_params)
+  
+  best_cv_results <- fit_resamples(
+    best_workflow,
+    resamples = dna_folds,
+    metrics   = metric_set(pr_auc, roc_auc),
+    control   = control_resamples(save_pred = TRUE) # Only save predictions for the winner! [cite: 413]
+  )
+  
+  best_preds <- collect_predictions(best_cv_results) # Unbiased predictions harvested! [cite: 413, 415]
+  
+  # -------------------------------------------------------------------------
+  # C. Generate ROC & PR Plots (Using the safe best_preds) [cite: 6]
+  # -------------------------------------------------------------------------
+  roc_plot <- best_preds |> (\(preds) {
+    auc_val <- preds |> roc_auc(truth = !!sym(conf$target_col), .pred_DNA) |> pull(.estimate)
+    preds |>
+      roc_curve(truth = !!sym(conf$target_col), .pred_DNA) |>
+      ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+      geom_abline(slope = 1, linetype = 2, alpha = 0.4) +
+      geom_path(linewidth = 1, color = "midnightblue") +
+      coord_equal() +
+      theme_bw() +
+      labs(title = "ROC curve", subtitle = paste0("ROC AUC: ", round(auc_val, 3)))
+  })()
+  
+  pr_plot <- best_preds |> (\(preds) {
+    pr_val <- preds |> pr_auc(truth = !!sym(conf$target_col), .pred_DNA) |> pull(.estimate)
+    preds |>
+      pr_curve(truth = !!sym(conf$target_col), .pred_DNA) %>%
+      ggplot(aes(x = recall, y = precision)) +
+      geom_path(linewidth = 1, color = "midnightblue") +
+      geom_hline(yintercept = 0.05, lty = 2, color = "red") +
+      coord_equal() +
+      theme_bw() +
+      labs(title = "PR Curve", subtitle = paste0("PR AUC: ", round(pr_val, 3)))
+  })()
+  
   
   # -------------------------------------------------------------------------
   # 5. Save Tuning Output

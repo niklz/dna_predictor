@@ -4,7 +4,39 @@
 source("00_libraries_and_utils.R")
 conf <- config::get()
 
-# progress bar
+
+# # Single sequential fold timing test
+# 
+# local({
+#   train_data <- readRDS("data/processed/train_engineered_tune.rds")
+#   
+#   # 2. Lock SPEC to single thread
+#   rf_spec <- rand_forest(mtry = 3, trees = 500, min_n = 6) %>%
+#     set_engine("ranger", num.threads = 1, importance = "none") %>%
+#     set_mode("classification")
+#   
+#   # 3. Create a 1-fold rset using safe row-bracket indexing!
+#   set.seed(123)
+#   all_folds <- group_vfold_cv(train_data, v = 10, group = "dim_patient_id")
+#   
+#   single_fold <- rsample::manual_rset(all_folds$splits[1], ids = "Fold1")
+#   
+#   # 4. Bind and run sequentially (no parallel setup!)
+#   wf <- workflow() %>% 
+#     add_recipe(readRDS("data/processed/dna_recipe.rds")) %>% 
+#     add_model(rf_spec)
+#   
+#   library(tictoc)
+#   tic("Single sequential fold")
+#   fit_resamples(
+#     wf,
+#     resamples = single_fold,
+#     metrics   = metric_set(pr_auc, roc_auc),
+#     control   = control_resamples(save_pred = FALSE)
+#   )
+#   toc()
+# })
+
 
 
 model_tune_results <- local({
@@ -41,7 +73,7 @@ model_tune_results <- local({
   # 3. Create Resamples and Parallel Grid Tuning
   # -------------------------------------------------------------------------
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_data, v = conf$grid_size, group = "dim_patient_id")
+  dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = "dim_patient_id")
 
   
   # Set up the search grid (juice the recipe locally once)
@@ -66,18 +98,20 @@ model_tune_results <- local({
   handlers(global = TRUE)
   handlers("txtprogressbar")
   
+  control_safe <- control_grid(
+    save_pred     = FALSE,       # Discard intermediate predictions
+    save_workflow = FALSE,       # Discard bloated workflows to prevent memory leaks
+    parallel_over = "resamples", # Parallelise strictly over folds (reduces socket copies from 250 to 10)
+    verbose       = TRUE
+  )
+  
     
     fits <- tuning_workflow %>%
       tune_grid(
         resamples = dna_folds,
         grid = rf_grid,
         metrics = metric_set(pr_auc, roc_auc),
-        control = control_grid(
-          save_pred = TRUE,
-          save_workflow = TRUE,
-          parallel_over = "resamples",
-          verbose = TRUE
-        )
+        control = control_safe
       )
   
   toc()

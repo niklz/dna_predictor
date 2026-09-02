@@ -14,7 +14,11 @@ model_tune_results <- local({
   rf_spec <- rand_forest(mtry = tune(),
                          trees = tune(),
                          min_n = tune()) %>%
-    set_engine("ranger") %>%
+    set_engine(
+      "ranger",
+      num.threads = 1,          
+      importance  = "none"      
+      ) %>%
     set_mode("classification")
   
   
@@ -39,8 +43,11 @@ model_tune_results <- local({
   set.seed(123)
   dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = dim_patient_id)
   
+  # single fold test
+  dna_folds <- dna_folds %>% dplyr::slice(1)
+  
   # Set up the search grid (juice the recipe locally once)
-  prepped_features <- prep(readRDS("data/processed/dna_recipe.rds")) %>%
+  prepped_features <- prep(readRDS("data/processed/dna_recipe.rds"), training = train_data) %>%
     juice() %>%
     select(-all_of(conf$target_col))
   

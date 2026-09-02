@@ -18,6 +18,7 @@ model_bundle_path <- "data/processed/rf_final_model.rds"
 if (!file.exists(model_bundle_path)) {
   stop("Model bundle not found. Please train and calibrate the model first.")
 }
+
 model_bundle  <- readRDS(model_bundle_path)
 rf_model      <- model_bundle$model
 rf_calibrator <- model_bundle$calibrator

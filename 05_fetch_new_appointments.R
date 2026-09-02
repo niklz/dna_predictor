@@ -178,7 +178,7 @@ ISNULL(Alerts.a_dementia, 0)                 AS a_dementia,
 ,MobilePhoneNumber
 ,ClinicName     ,ClinicSessionCode      ,ClinicSession
 ,p.Surname
-,a.AppointmentDTTM AS [Appt Date/Time]
+,a.AppointmentDTTM AS [appt_date_time]
 ,LocalTreatmentFunction
 ,Site
 ,a.ClinicSite

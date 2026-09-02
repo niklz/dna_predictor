@@ -430,6 +430,8 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
     "Psychosis", "Severe anxiety", "Wheelchair user"
   )
   
+  
+  
   final_manifest <- final_manifest %>%
     rowwise() %>%
     mutate(
@@ -449,7 +451,7 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
       } else {
         parsed_dt <- lubridate::parse_date_time(
           appt_dttm, 
-          orders = c("dmy HM", "dmy HMS", "dmy")
+          orders = c("dmy HM", "dmy HMS", "dmy", "ymd")
         )
         format(parsed_dt, "%Y-%m-%d")
       },

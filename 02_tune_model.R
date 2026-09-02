@@ -41,10 +41,8 @@ model_tune_results <- local({
   # 3. Create Resamples and Parallel Grid Tuning
   # -------------------------------------------------------------------------
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_data, v = conf$cv_folds, group = dim_patient_id)
-  
-  # single fold test
-  dna_folds <- dna_folds %>% dplyr::slice(1)
+  dna_folds <- group_vfold_cv(train_data, v = 2, group = "dim_patient_id")
+
   
   # Set up the search grid (juice the recipe locally once)
   prepped_features <- prep(readRDS("data/processed/dna_recipe.rds"), training = train_data) %>%

@@ -50,8 +50,8 @@ default:
 
   # Execution flags
   tune_model: false
-  num_threads: 4
-  num_workers: 6
+  num_threads: 1
+  num_workers: 12
 
   # Model tuning
   cv_folds: 10

@@ -41,7 +41,7 @@ model_tune_results <- local({
   # 3. Create Resamples and Parallel Grid Tuning
   # -------------------------------------------------------------------------
   set.seed(123)
-  dna_folds <- group_vfold_cv(train_data, v = 2, group = "dim_patient_id")
+  dna_folds <- group_vfold_cv(train_data, v = conf$grid_size, group = "dim_patient_id")
 
   
   # Set up the search grid (juice the recipe locally once)
@@ -57,7 +57,7 @@ model_tune_results <- local({
   )
   
   # Set up parallel execution with safety parameters
-  options(future.globals.maxSize = 3000 * 1024^2)
+  options(future.globals.maxSize = 8000 * 1024^2)
   registerDoFuture()
   plan(multisession, workers = conf$num_workers)
   
@@ -75,7 +75,7 @@ model_tune_results <- local({
         control = control_grid(
           save_pred = TRUE,
           save_workflow = TRUE,
-          parallel_over = "everything",
+          parallel_over = "resamples",
           verbose = TRUE
         )
       )

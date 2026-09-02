@@ -321,7 +321,8 @@ build_trial_recipe <- function(data_template, target_col, fct_other_prp = 0.05) 
     step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
     
     # Target encode high-cardinality nominative features [cite: 236]
-    step_lencode_mixed(
+    # step_lencode_mixed(
+    step_lencode_glm(
       c(
         "clinic_location",
         "clinic_code",

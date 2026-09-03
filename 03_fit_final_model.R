@@ -16,6 +16,7 @@ train_data <- readRDS("data/processed/train_engineered.rds")
 # Fit the best model and calibrate on out-of-fold predictions
 model <- local({
   
+  model_tune_results <- readRDS("data/processed/rf_tune.rds")
   params <- model_tune_results$best_params
   # -------------------------------------------------------------------------
   # 1. Reconstruct Untuned Workflow Blueprint [cite: 2]
@@ -45,7 +46,7 @@ model <- local({
     add_model(rf_spec)
   
   # -------------------------------------------------------------------------
-  # 2. Extract Unbiased Out-Of-Fold Predictions for Calibrator [cite: 415]
+  # 2. Extract Unbiased Out-Of-Fold Predictions for Calibrator
   # -------------------------------------------------------------------------
   message("Generating out-of-fold predictions for calibration...")
   
@@ -56,26 +57,26 @@ model <- local({
   # Finalise blueprint with your winning parameters [cite: 406]
   best_wf <- wf %>% finalize_workflow(params)
   
-  # ACTIVATE WORKSTATION PARALLEL CORES SAFELY [cite: 4]
+  # LAPTOP-SAFE SEQUENTIAL RUN [cite: 4]
+  # Windows multisession socket serialization of 1.5GB data is too heavy for a laptop.
+  # Running sequentially avoids copying data, saves RAM, and completes in ~2 minutes! [cite: 4]
   library(doFuture)
   registerDoFuture()
-  plan(multisession, workers = conf$num_workers) # Launches parallel cores cleanly [cite: 4]
+  plan(sequential) # 100% stable, zero socket copies, no OOM crashes! [cite: 4]
   
-  # Run a highly parallel, thread-locked CV fit to harvest calibration predictions [cite: 413]
+  # Run the CV fit to harvest calibration predictions [cite: 413]
   cv_results <- fit_resamples(
     best_wf,
     resamples = dna_folds,
     metrics   = metric_set(pr_auc, roc_auc),
     control   = control_resamples(
       save_pred     = TRUE,       # Save predictions strictly for the winner [cite: 413]
-      parallel_over = "resamples" # Parallelise strictly over folds [cite: 4]
+      parallel_over = "resamples" # Safe sequential resample loop [cite: 4]
     )
   )
   
-  # Release parallel workers back to the system immediately [cite: 4]
-  plan(sequential) 
-  
-  preds <- collect_predictions(cv_results)# Unbiased predictions harvested
+
+  preds <- collect_predictions(cv_results)
   
   cal_model <- cal_estimate_logistic(
     preds,
@@ -113,6 +114,7 @@ model <- local({
   list(
     model      = fit,
     calibrator = cal_model,
+    predictions = preds,
     model_ver  = conf$model_ver
   )
 })

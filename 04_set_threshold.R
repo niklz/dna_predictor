@@ -15,9 +15,7 @@ optimal_bounds <- local({
   
   # 2. Extract out-of-fold predictions from the best CV model & apply calibration
   # This provides an unbiased estimate of the historical score distribution
-  cv_preds <-
-    collect_predictions(model_tune_results$tune_res, parameters = best_params) %>%
-    cal_apply(model_final$calibrator)
+  cv_preds <- model_bundle$predictions
   
   # 3. Generate PR Curve data and raw historical scores
   pr_curve_data <-

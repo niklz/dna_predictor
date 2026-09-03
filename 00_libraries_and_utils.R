@@ -87,6 +87,41 @@ parse_appt_time <- function(time_val) {
   }, USE.NAMES = FALSE)
 }
 
+parse_to_date <- function(x) {
+  # 1. If already a Date or POSIXct object (Excel reader case), convert directly
+  if (inherits(x, c("Date", "POSIXt"))) {
+    return(as.Date(x))
+  }
+  
+  # 2. If raw numeric serial days (unformatted Excel double case, e.g. 46268)
+  if (is.numeric(x)) {
+    return(as.Date(x, origin = "1899-12-30"))
+  }
+  
+  # 3. If a character string (CSV reader case)
+  if (is.character(x)) {
+    x_clean <- trimws(x)
+    
+    # Check if it's a number stored as text (e.g. "46268.60")
+    if (!any(is.na(suppressWarnings(as.numeric(x_clean))))) {
+      return(as.Date(as.numeric(x_clean), origin = "1899-12-30"))
+    }
+    
+    # Extract just the date component (first 10 chars)
+    date_part <- substring(x_clean, 1, 10)
+    
+    # Parse UK slash format ("DD/MM/YYYY") or ISO dash format ("YYYY-MM-DD")
+    parsed_uk  <- as.Date(date_part, format = "%d/%m/%Y")
+    parsed_iso <- as.Date(date_part, format = "%Y-%m-%d")
+    
+    # Coalesce: keep whichever parser succeeded
+    return(dplyr::coalesce(parsed_uk, parsed_iso))
+  }
+  
+  # Fallback default
+  return(as.Date(x))
+}
+
 
 apply_custom_feature_engineering <- function(data) {
   data %>%
@@ -97,7 +132,7 @@ apply_custom_feature_engineering <- function(data) {
       ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
       # Set the baseline reference level to the most frequent category
       ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
-      appt_date = parse_appt_date(appt_month),
+      appt_date = parse_to_date(appt_month),
       # appt_dow = factor(weekdays(appt_date)),
       appt_month_num = as.factor(format(appt_date, "%m")),
       lead_over_30 = ifelse(lead_time_days > 30, 1, 0),

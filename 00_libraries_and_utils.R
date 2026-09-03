@@ -1,3 +1,4 @@
+
 library(dplyr)
 library(tidyr)
 library(purrr)
@@ -9,7 +10,7 @@ library(ggplot2)
 library(vip)
 library(tidymodels)
 library(probably)
-library(embed) # For step_lmer (High-cardinality encoding)
+library(embed) # For step_lencode_glm / step_lencode_mixed
 library(themis)
 library(tictoc)
 library(future)
@@ -22,11 +23,10 @@ library(odbc)
 library(progressr)
 library(readxl)
 
-conf <- config::get()
+# -------------------------------------------------------------------------
+# CUSTOM HELPER FUNCTIONS & POLYSYNTACTIC DATETIME PARSERS
+# -------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# CUSTOM HELPER FUNCTIONS
-# -------------------------------------------------------------------------
 collect_ethnicity <- function(x) {
   dplyr::case_when(
     x %in% c("Not Stated", "Not Known", "Not Collected At This Time", "Not Set") ~ "Unknown",
@@ -68,12 +68,29 @@ parse_appt_date <- function(x) {
 }
 
 parse_appt_time <- function(time_val) {
-  if (inherits(time_val, "POSIXt")) {
-    return(format(time_val, "%H:%M"))
+  # 1. If already POSIXct or Date object, format it
+  if (inherits(time_val, c("POSIXt", "Date"))) {
+    return(format(as.POSIXct(time_val), "%H:%M"))
   }
   
+  # 2. If it is a numeric Excel serial datetime (e.g. 46272.48)
+  if (is.numeric(time_val)) {
+    dt <- as.POSIXct(time_val * 86400, origin = "1899-12-30", tz = "GMT")
+    return(format(dt, "%H:%M"))
+  }
+  
+  # 3. If a character vector or factor, parse it safely
   sapply(as.character(time_val), function(val) {
     if (is.na(val) || val == "" || val == "NA") return("")
+    
+    # Check if it is a number stored as text (e.g. "46272.48")
+    val_num <- suppressWarnings(as.numeric(val))
+    if (!is.na(val_num)) {
+      dt <- as.POSIXct(val_num * 86400, origin = "1899-12-30", tz = "GMT")
+      return(format(dt, "%H:%M"))
+    }
+    
+    # Standard string parsing for CSVs (e.g. "15/09/2026 11:31")
     if (grepl(" ", val)) {
       parts <- strsplit(val, " ")[[1]]
       if (length(parts) >= 2 && grepl("^\\d{1,2}:\\d{2}", parts[2])) {
@@ -122,254 +139,53 @@ parse_to_date <- function(x) {
   return(as.Date(x))
 }
 
-
-apply_custom_feature_engineering <- function(data) {
-  data %>%
-    mutate(
-      across(c(age_at_appointment, distance_km, lead_time_days), as.numeric),
-      # --- 1. Your Original Feature Engineering ---
-      ethnicity_clean = collect_ethnicity(ethnicity),
-      ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
-      # Set the baseline reference level to the most frequent category
-      ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
-      appt_date = parse_to_date(appt_month),
-      # appt_dow = factor(weekdays(appt_date)),
-      appt_month_num = as.factor(format(appt_date, "%m")),
-      lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
-      lead_time_days_log = log1p(pmax(0, lead_time_days)),
-      is_morning = ifelse(appt_hour < 12, 1, 0),
-      appt_hour_sin = sin(2 * pi * appt_hour / 24),
-      appt_hour_cos = cos(2 * pi * appt_hour / 24),
-      has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
-    ) %>%
-    rename(imd = index_multiple_deprivation_decile) %>%
-    mutate(
-      
-      # Coerce Character variables 
-      across(c(local_spec_code, national_spec_code, imd), as.character),
-      
-      # Coerce Integer variables (protects ID and indicators)
-      dim_patient_id = as.integer(dim_patient_id),
-      nfa_ind        = as.integer(nfa_ind),
-      appt_wknd_ind  = as.integer(appt_wknd_ind),
-      
-      # Bulk coerce all 20 clinical accessibility flags ('a_') to integers
-      across(starts_with("a_"), as.integer)
-    ) %>%
-    # --- 3. Clean up raw columns (Replaces step_rm() to avoid workflow leaks) ---
-    select(
-      -appt_hour, -lead_time_days, -appt_date, -appt_month, 
-      -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_at_appointment
-    )
-}
-
-
-# =====================================================================
-# find_optimal_ml_thresholds()
-# =====================================================================
-#' Find operationally- and statistically-feasible ML risk thresholds
-#'
-#' Given a precision-recall curve and the historical distribution of model
-#' scores, this function identifies two "safe zone" thresholds that bound
-#' the proportion of the clinic population that should be flagged by the
-#' model:
-#'
-#'   - a FLOOR threshold: the minimum proportion needed to reach your
-#'     target trial sample size (n_req) within the trial window (w weeks)
-#'   - a CEILING threshold: the maximum proportion the care team can
-#'     operationally handle, given call capacity (c_max) per week
-#'
-#' Any threshold you choose between these two values should simultaneously
-#' satisfy statistical power requirements and stay within staff capacity.
-#'
-#' @param pr_curve_data A tibble/data frame from yardstick::pr_curve(),
-#'   containing (at minimum) the columns `.threshold` and `precision`.
-#'   Typically produced via:
-#'   collect_predictions(...) %>% pr_curve(truth = ..., .pred_DNA)
-#'
-#' @param historical_scores Numeric vector of historical ML risk scores
-#'   (predicted probabilities) from your cohort. Used to empirically
-#'   estimate, for each candidate threshold, what proportion of real
-#'   patients would be flagged. Must be a plain numeric vector — if
-#'   extracting from collect_predictions(), remember to pull() the score
-#'   column first, e.g. collect_predictions(...) %>% pull(.pred_DNA).
-#'
-#' @param v_week Numeric. Expected weekly clinic volume (patients/week)
-#'   eligible for enrollment. Default 308.
-#'
-#' @param w Numeric. Planned trial duration in weeks. Default 26.
-#'
-#' @param n_req Numeric. Target total sample size required for adequate
-#'   statistical power. Default 800.
-#'
-#' @param a_int Numeric in (0, 1]. Allocation ratio to the intervention
-#'   arm (e.g. 0.50 = 50% of enrolled patients receive the intervention).
-#'   Default 0.50.
-#'
-#' @param r_call Numeric in (0, 1]. Expected non-response rate among
-#'   intervention-arm patients that will require a follow-up phone call
-#'   from a coordinator. Default 0.70.
-#'
-#' @param c_max Numeric. Maximum number of calls coordinators can
-#'   realistically handle per week (operational capacity constraint).
-#'   Default 30.
-#'
-#' @return An (invisible) list with:
-#'   \describe{
-#'     \item{floor_threshold}{Model score threshold (>=) that most closely
-#'       achieves the statistical floor proportion.}
-#'     \item{ceiling_threshold}{Model score threshold (>=) that most
-#'       closely achieves the operational ceiling proportion.}
-#'     \item{floor_prop}{Empirical proportion of historical_scores flagged
-#'       at floor_threshold.}
-#'     \item{ceiling_prop}{Empirical proportion of historical_scores
-#'       flagged at ceiling_threshold.}
-#'     \item{floor_target_prop}{The theoretical target proportion derived
-#'       from n_req, v_week, and w (before matching to an actual
-#'       threshold).}
-#'     \item{ceiling_target_prop}{The theoretical target proportion
-#'       derived from c_max, v_week, a_int, and r_call (before matching).}
-#'     \item{feasible}{Logical. TRUE if floor_prop <= ceiling_prop, i.e.
-#'       a valid "safe zone" of thresholds exists between the two bounds.}
-#'     \item{enriched_pr_curve}{The full pr_curve_data with an added
-#'       prop_flagged column, useful for downstream plotting or
-#'       sensitivity analysis.}
-#'   }
-#'
-#' @examples
-#' \dontrun{
-#' optimal_thresholds <- find_optimal_ml_thresholds(
-#'   pr_curve_data     = collect_predictions(model_tune$tune_res,
-#'                          parameters = model_tune$best_params) %>%
-#'                        pr_curve(truth = dna_outcome, .pred_DNA),
-#'   historical_scores = collect_predictions(model_tune$tune_res,
-#'                          parameters = model_tune$best_params) %>%
-#'                        pull(.pred_DNA),
-#'   v_week = 308,
-#'   w      = 26,
-#'   n_req  = 800
-#' )
-#' }
-find_optimal_ml_thresholds <- function(
-    pr_curve_data,
-    historical_scores,
-    v_week = 308,
-    w = 26,
-    n_req = 800,
-    a_int = 0.50,
-    r_call = 0.70,
-    c_max = 30
-) {
-  
-  # ---------------------------------------------------------
-  # 1. Calculate Operational & Statistical Bounds (Proportions)
-  # ---------------------------------------------------------
-  floor_prop   <- n_req / (v_week * w)
-  ceiling_prop <- c_max / (v_week * a_int * r_call)
-  is_feasible  <- floor_prop <= ceiling_prop
-  
-  cat("====================================================\n")
-  cat("      ML THRESHOLD SAFE ZONE EXTRACTOR              \n")
-  cat("====================================================\n")
-  cat(sprintf("Statistical Floor Target:   %.2f%% of clinic (Min N = %d over %d weeks)\n",
-              floor_prop * 100, n_req, w))
-  cat(sprintf("Operational Ceiling Target: %.2f%% of clinic (Max Calls = %d/week)\n",
-              ceiling_prop * 100, c_max))
-  cat("----------------------------------------------------\n")
-  
-  if (!is_feasible) {
-    cat("[!] WARNING: Statistical floor exceeds operational ceiling!\n")
-    cat("    No single threshold can satisfy both constraints -\n")
-    cat("    consider raising c_max, extending w, or lowering n_req.\n\n")
+parse_to_datetime <- function(x) {
+  # 1. If already a POSIXt or Date object, convert cleanly
+  if (inherits(x, c("POSIXt", "Date"))) {
+    return(as.POSIXct(x))
   }
   
-  # ---------------------------------------------------------
-  # 2. Enrich PR Curve with Empirical Proportion Flagged (VECTORIZED)
-  # ---------------------------------------------------------
-  sorted_scores <- sort(historical_scores)
-  n_hist <- length(sorted_scores)
+  # 2. If raw numeric Excel serial days (e.g. 46272.48)
+  if (is.numeric(x)) {
+    # Convert Excel days to seconds (86400 seconds per day) from Excel's base origin
+    return(as.POSIXct(x * 86400, origin = "1899-12-30", tz = "GMT"))
+  }
   
-  enriched_pr <- pr_curve_data %>%
-    filter(.threshold != Inf & !is.na(.threshold)) %>%
-    mutate(
-      n_less       = findInterval(.threshold, sorted_scores, left.open = TRUE),
-      prop_flagged = (n_hist - n_less) / n_hist
-    ) %>%
-    select(-n_less)
-  
-  # ---------------------------------------------------------
-  # 3. Match Target Proportions to Closest PR Curve Thresholds
-  # ---------------------------------------------------------
-  floor_match <- enriched_pr %>%
-    slice_min(abs(prop_flagged - floor_prop), n = 1, with_ties = FALSE)
-  
-  ceiling_match <- enriched_pr %>%
-    slice_min(abs(prop_flagged - ceiling_prop), n = 1, with_ties = FALSE)
-  
-  # Estimated weekly/total volumes at each matched threshold, for context
-  floor_n_per_week   <- floor_match$prop_flagged * v_week
-  ceiling_n_per_week <- ceiling_match$prop_flagged * v_week
-  floor_total_n      <- floor_n_per_week * w
-  ceiling_est_calls  <- ceiling_n_per_week * a_int * r_call
-  
-  # ---------------------------------------------------------
-  # 4. Console Report
-  # ---------------------------------------------------------
-  cat("RECOMMENDED MODEL THRESHOLD RANGE:\n\n")
-  cat(sprintf("-> Power Floor Threshold:      >= %.4f\n", floor_match$.threshold))
-  cat(sprintf("   Flags top %.1f%% of clinic (~%.0f pts/week, ~%.0f over %d weeks) | Precision: %.3f\n",
-              floor_match$prop_flagged * 100, floor_n_per_week, floor_total_n, w, floor_match$precision))
-  cat(sprintf("-> Capacity Ceiling Threshold:  >= %.4f\n", ceiling_match$.threshold))
-  cat(sprintf("   Flags top %.1f%% of clinic (~%.0f pts/week, ~%.0f est. calls/week) | Precision: %.3f\n",
-              ceiling_match$prop_flagged * 100, ceiling_n_per_week, ceiling_est_calls, ceiling_match$precision))
-  cat("----------------------------------------------------\n")
-  cat(sprintf("Safe zone: %s\n", if (is_feasible) "VALID (floor <= ceiling)" else "INVALID (floor > ceiling)"))
-  cat("====================================================\n\n")
-  
-  # ---------------------------------------------------------
-  # 5. Return structured list for downstream pipeline scripts
-  # ---------------------------------------------------------
-  return(invisible(list(
-    floor_threshold     = floor_match$.threshold,
-    ceiling_threshold   = ceiling_match$.threshold,
-    floor_prop          = floor_match$prop_flagged,
-    ceiling_prop        = ceiling_match$prop_flagged,
-    floor_target_prop   = floor_prop,
-    ceiling_target_prop = ceiling_prop,
-    feasible            = is_feasible,
-    enriched_pr_curve   = enriched_pr
-  )))
-}
-
-
-# Centralised recipe builder to prevent train-serve skew and environment leakage [cite: 11]
-build_trial_recipe <- function(data_template, target_col, fct_other_prp = 0.05) {
-  
-  formula_obj <- as.formula(paste(target_col, "~ ."))
-  # Crucial: Strip parent environment references to keep the object lightweight [cite: 11]
-  environment(formula_obj) <- baseenv() 
-  
-  recipe(formula_obj, data = data_template) %>%
-    update_role(dim_patient_id, new_role = "id") %>%
-    step_novel(all_nominal_predictors()) %>%
-    step_unknown(all_nominal_predictors(), -imd) %>%
-    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+  # 3. If a character string
+  if (is.character(x)) {
+    x_clean <- trimws(x)
     
-    # Target encode high-cardinality nominative features [cite: 236]
-    # step_lencode_mixed(
-    step_lencode_glm(
-      c(
-        "clinic_location",
-        "clinic_code",
-        "site_code",
-        "registered_gp_practice",
-        "national_spec_code"
-      ),
-      outcome = vars(!!sym(target_col))
-    ) %>%
+    # Check if it's a number stored as text (e.g. "46272.48")
+    if (!any(is.na(suppressWarnings(as.numeric(x_clean))))) {
+      return(as.POSIXct(as.numeric(x_clean) * 86400, origin = "1899-12-30", tz = "GMT"))
+    }
     
-    step_nzv(all_predictors()) %>%
-    step_impute_median(all_numeric_predictors())
+    # Try parsing UK slash format and ISO dash format
+    parsed_uk <- as.POSIXct(x_clean, format = "%d/%m/%Y %H:%M:%S", tz = "GMT")
+    if (any(is.na(parsed_uk))) {
+      parsed_uk_short <- as.POSIXct(x_clean, format = "%d/%m/%Y %H:%M", tz = "GMT")
+      parsed_uk <- dplyr::coalesce(parsed_uk, parsed_uk_short)
+    }
+    
+    parsed_iso <- as.POSIXct(x_clean, format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
+    if (any(is.na(parsed_iso))) {
+      parsed_iso_short <- as.POSIXct(x_clean, format = "%Y-%m-%d %H:%M", tz = "GMT")
+      parsed_iso <- dplyr::coalesce(parsed_iso, parsed_iso_short)
+    }
+    
+    res <- dplyr::coalesce(parsed_uk, parsed_iso)
+    
+    # Fallback to date-only parser if time parsing failed
+    if (any(is.na(res))) {
+      res_date <- as.POSIXct(parse_to_date(x_clean))
+      res <- dplyr::coalesce(res, res_date)
+    }
+    
+    return(res)
+  }
+  
+  # Fallback default
+  return(as.POSIXct(x))
 }
 
 standardise_phone_number <- function(phone_col) {
@@ -387,13 +203,154 @@ standardise_phone_number <- function(phone_col) {
   return(output_phone)
 }
 
+# -------------------------------------------------------------------------
+# CENTRALIZED FEATURE ENGINEERING & RECIPE BUILDING (Prevents Train-Serve Skew)
+# -------------------------------------------------------------------------
+
+apply_custom_feature_engineering <- function(data) {
+  data %>%
+    mutate(
+      across(any_of(c("age_at_appointment", "distance_km", "lead_time_days")), as.numeric),
+      
+      # Standardise the appointment date using polymorphic parser
+      ethnicity_clean = collect_ethnicity(ethnicity),
+      ethnicity_group = aggregate_ethnicity_high_level(ethnicity_clean),
+      ethnicity_group = relevel(factor(ethnicity_group), ref = "White"),
+      
+      appt_date = parse_to_date(appt_month),
+      appt_month_num = as.factor(format(appt_date, "%m")),
+      
+      lead_over_30 = ifelse(lead_time_days > 30, 1, 0),
+      lead_time_days_log = log1p(pmax(0, lead_time_days)),
+      is_morning = ifelse(appt_hour < 12, 1, 0),
+      appt_hour_sin = sin(2 * pi * appt_hour / 24),
+      appt_hour_cos = cos(2 * pi * appt_hour / 24),
+      has_dna_history = ifelse(prev_dna_ly > 0, 1, 0)
+    ) %>%
+    rename(imd = index_multiple_deprivation_decile) %>%
+    mutate(
+      # Coerce core variables
+      across(any_of(c("local_spec_code", "national_spec_code", "imd")), as.character),
+      across(any_of(c("dim_patient_id", "nfa_ind", "appt_wknd_ind")), as.integer),
+      across(starts_with("a_"), as.integer)
+    ) %>%
+    # Clean up raw columns to prevent leakage and keep the workflow light
+    select(
+      -appt_hour, -lead_time_days, -appt_date, -appt_month, 
+      -prev_dna_ly, -ethnicity, -ethnicity_clean, -age_at_appointment
+    )
+}
+
+build_trial_recipe <- function(data_template, target_col, fct_other_prp = 0.05) {
+  formula_obj <- as.formula(paste(target_col, "~ ."))
+  environment(formula_obj) <- baseenv() # Strip lexical scoping references
+  
+  recipe(formula_obj, data = data_template) %>%
+    update_role(dim_patient_id, new_role = "id") %>%
+    step_novel(all_nominal_predictors()) %>%
+    step_unknown(all_nominal_predictors(), -imd) %>%
+    step_other(all_nominal_predictors(), threshold = fct_other_prp) %>%
+    # Target-encode high-cardinality features using GLM method for lightning speed
+    step_lencode_glm(
+      any_of(c(
+        "clinic_location",
+        "clinic_code",
+        "site_code",
+        "registered_gp_practice",
+        "national_spec_code"
+      )),
+      outcome = vars(!!sym(target_col))
+    ) %>%
+    step_nzv(all_predictors()) %>%
+    step_impute_median(all_numeric_predictors())
+}
+
+# -------------------------------------------------------------------------
+# OPTIMAL ML THRESHOLD SAFE ZONE EXTRACTOR
+# -------------------------------------------------------------------------
+
+find_optimal_ml_thresholds <- function(
+    pr_curve_data,        
+    historical_scores,    
+    v_week = 308,         
+    w = 26,               
+    n_req = 800,          
+    a_int = 0.50,         
+    r_call = 0.70,        
+    c_max = 30            
+) {
+  floor_prop   <- n_req / (v_week * w)
+  ceiling_prop <- c_max / (v_week * a_int * r_call)
+  is_feasible  <- floor_prop <= ceiling_prop
+  
+  cat("====================================================\n")
+  cat("      ML THRESHOLD SAFE ZONE EXTRACTOR              \n")
+  cat("====================================================\n")
+  cat(sprintf("Statistical Floor Target:   %.2f%% of clinic (Min N = %d over %d weeks)\n", floor_prop * 100, n_req, w))
+  cat(sprintf("Operational Ceiling Target: %.2f%% of clinic (Max Calls = %d/week)\n", ceiling_prop * 100, c_max))
+  cat("----------------------------------------------------\n")
+  
+  if (!is_feasible) {
+    cat("[!] WARNING: Statistical floor exceeds operational ceiling!\n")
+    cat("    No single threshold can satisfy both constraints -\n")
+    cat("    consider raising c_max, extending w, or lowering n_req.\n\n")
+  }
+  
+  sorted_scores <- sort(historical_scores)
+  n_hist <- length(sorted_scores)
+  
+  enriched_pr <- pr_curve_data %>%
+    filter(.threshold != Inf & !is.na(.threshold)) %>%
+    mutate(
+      n_less       = findInterval(.threshold, sorted_scores, left.open = TRUE),
+      prop_flagged = (n_hist - n_less) / n_hist
+    ) %>%
+    select(-n_less)
+  
+  floor_match <- enriched_pr %>% 
+    slice_min(abs(prop_flagged - floor_prop), n = 1, with_ties = FALSE)
+  
+  ceiling_match <- enriched_pr %>% 
+    slice_min(abs(prop_flagged - ceiling_prop), n = 1, with_ties = FALSE)
+  
+  floor_n_per_week   <- floor_match$prop_flagged * v_week
+  ceiling_n_per_week <- ceiling_match$prop_flagged * v_week
+  floor_total_n      <- floor_n_per_week * w
+  ceiling_est_calls  <- ceiling_n_per_week * a_int * r_call
+  
+  cat("RECOMMENDED MODEL THRESHOLD RANGE:\n\n")
+  cat(sprintf("-> Power Floor Threshold:      >= %.4f\n", floor_match$.threshold))
+  cat(sprintf("   Flags top %.1f%% of clinic (~%.0f pts/week, ~%.0f over %d weeks) | Precision: %.3f\n",
+              floor_match$prop_flagged * 100, floor_n_per_week, floor_total_n, w, floor_match$precision))
+  cat(sprintf("-> Capacity Ceiling Threshold:  >= %.4f\n", ceiling_match$.threshold))
+  cat(sprintf("   Flags top %.1f%% of clinic (~%.0f pts/week, ~%.0f est. calls/week) | Precision: %.3f\n", 
+              ceiling_match$prop_flagged * 100, ceiling_n_per_week, ceiling_est_calls, ceiling_match$precision))
+  cat("----------------------------------------------------\n")
+  cat(sprintf("Safe zone: %s\n", if (is_feasible) "VALID (floor <= ceiling)" else "INVALID (floor > ceiling)"))
+  cat("====================================================\n\n")
+  
+  return(invisible(list(
+    floor_threshold     = floor_match$.threshold,
+    ceiling_threshold   = ceiling_match$.threshold,
+    floor_prop          = floor_match$prop_flagged,
+    ceiling_prop        = ceiling_match$prop_flagged,
+    floor_target_prop   = floor_prop,
+    ceiling_target_prop = ceiling_prop,
+    feasible            = is_feasible,
+    enriched_pr_curve   = enriched_pr
+  )))
+}
+
+# -------------------------------------------------------------------------
+# STRATIFIED RANDOMISATION & OPERATIONAL COHORT ALLOCATION
+# -------------------------------------------------------------------------
 
 generate_appointment_manifest <- function(new_appointments, op_threshold, rf_model, rf_calibrator, conf) {
   
-  # A. Force lowercase column names to prevent case mismatches [cite: 68]
+  # A. Force lowercase column names to prevent case mismatches
   new_appointments <- rename_with(new_appointments, .fn = str_to_lower)
   
-  # B. Standardise tumor site spelling variations dynamically [cite: 109, 121]
+  # B. Standardise tumor site spelling variations dynamically
   if ("tumorsite" %in% colnames(new_appointments)) {
     new_appointments <- rename(new_appointments, tumoursite = tumorsite)
   }
@@ -401,16 +358,16 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
     new_appointments$tumoursite <- "Unknown" # Fallback group to prevent crashes
   }
   
-  # B. Feature engineering
+  # C. Feature engineering
   message("Engineering features for incoming cohort...")
   engineered_appointments <- apply_custom_feature_engineering(new_appointments)
   
-  # C. Prediction and calibration
+  # D. Prediction and calibration
   message("Generating calibrated risk predictions...")
   raw_predictions <- predict(rf_model, new_data = engineered_appointments, type = "prob")
   calibrated_predictions <- raw_predictions %>% cal_apply(rf_calibrator)
   
-  # D. Stratify risk and allocate trial arms (Within-Clinic Block Randomisation)
+  # E. Stratify risk and allocate trial arms (Within-Clinic Block Randomisation)
   message("Stratifying patient risk profiles and allocating cohorts within clinical groups...")
   allocation_ratio <- ifelse(!is.null(conf$trial_allocation_ratio), 
                              conf$trial_allocation_ratio, 
@@ -446,7 +403,7 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
     }) %>%
     ungroup()
   
-  # E. Generate primary keys, collapse flags, and map variables (31 columns total)
+  # F. Generate primary keys, collapse flags, and map variables (31 columns total)
   message("Generating unique keys and collapsing vulnerability flags...")
   
   vulnerability_cols <- c(
@@ -465,8 +422,6 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
     "Psychosis", "Severe anxiety", "Wheelchair user"
   )
   
-  
-  
   final_manifest <- final_manifest %>%
     rowwise() %>%
     mutate(
@@ -480,8 +435,10 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
       patient_id              = pasid, 
       nhs_number              = nhsnumber,
       
-      # Clean clear Date column
-      appointment_date        = if (inherits(appt_dttm, "POSIXt")) {
+      # Clean clear Date column (handles both raw numeric Excel days and character formats safely)
+      appointment_date        = if (is.numeric(appt_dttm)) {
+        format(as.Date(appt_dttm, origin = "1899-12-30"), "%Y-%m-%d")
+      } else if (inherits(appt_dttm, "POSIXt")) {
         format(appt_dttm, "%Y-%m-%d")
       } else {
         parsed_dt <- lubridate::parse_date_time(
@@ -491,9 +448,8 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
         format(parsed_dt, "%Y-%m-%d")
       },
       
-      # New clear Time column
+      # New clear Time column (handles both raw datetimes and separate time vectors safely)
       appointment_time        = {
-        # Detect if any columns contain date/time to find the second column
         time_cols <- grep("time", colnames(new_appointments), value = TRUE)
         time_cols <- grep("appt|date", time_cols, value = TRUE)
         time_cols <- time_cols[!time_cols %in% c("lead_time_days", "lead_time_days_log")]
@@ -506,7 +462,18 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
         parse_appt_time(raw_vals)
       },
       
-      appointment_day_of_week = format(as.Date(appt_dttm), "%A"),
+      appointment_day_of_week = if (is.numeric(appt_dttm)) {
+        format(as.Date(appt_dttm, origin = "1899-12-30"), "%A")
+      } else if (inherits(appt_dttm, "POSIXt")) {
+        format(appt_dttm, "%A")
+      } else {
+        parsed_dt <- lubridate::parse_date_time(
+          appt_dttm, 
+          orders = c("dmy HM", "dmy HMS", "dmy", "ymd")
+        )
+        format(parsed_dt, "%A")
+      },
+      
       clinic_code             = clinic_code,  
       tumoursite              = tumoursite,
       gp_practice             = registered_gp_practice,
@@ -538,10 +505,13 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
   return(final_manifest)
 }
 
+# -------------------------------------------------------------------------
+# BEAUTIFUL, COORDINATOR-READY WORKBOOK EXPORTER (openxlsx Engine)
+# -------------------------------------------------------------------------
 
 generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir = "outputs") {
   
-  # A. Dynamically construct file paths
+  # A. Dynamically construct file paths using organization name and runtime stamp
   current_date <- format(Sys.Date(), "%Y-%m-%d")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   
@@ -670,7 +640,7 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   writeData(wb, sheet_name_rost, t(headers), startCol = 1, startRow = 8, colNames = FALSE)
   addStyle(wb, sheet_name_rost, style_header, rows = 8, cols = 1:31)
   
-  export_roster_data <- manifest %>%  
+  export_roster_data <- manifest %>%
     select(
       appointment_id, patient_id, nhs_number, appointment_date, appointment_time, appointment_day_of_week, clinic_code, tumoursite, gp_practice,  
       age, sex, ethnicity, imd, accessibility_flags, dna_risk, risk_label, trial_arm,
@@ -691,6 +661,7 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   
   writeData(wb, sheet_name_rost, export_roster_data, startCol = 1, startRow = 9, colNames = FALSE)
   
+  # Vectorized Group Row Indices Calculations
   intervention_rows <- which(manifest$trial_arm == "intervention") + start_row - 1
   control_rows      <- which(manifest$trial_arm == "control") + start_row - 1
   not_in_trial_rows <- which(manifest$trial_arm == "not in trial") + start_row - 1
@@ -730,9 +701,10 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   dataValidation(wb, sheet_name_rost, col = 31, rows = start_row:end_row, type = "list", value = '"Attended,DNA,Cancelled,Rescheduled"')
   
   # Strict Decimal Datetime validation to block time-only "3pm" shortcuts
-  # Removed custom validation (not supported in this openxlsx version)
-  # Removed custom validation (not supported in this openxlsx version)
-  # Removed custom validation (not supported in this openxlsx version)
+  # (Setting the decimal bounds to > 45000 fully blocks hours-only entries like "0.625" / "3pm")
+  dataValidation(wb, sheet_name_rost, col = 22, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
+  dataValidation(wb, sheet_name_rost, col = 23, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
+  dataValidation(wb, sheet_name_rost, col = 26, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
   
   # Activate filters on all headers
   addFilter(wb, sheet_name_rost, row = 8, cols = 1:31)
@@ -790,5 +762,3 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   cat(sprintf("Success. Pre-formatted coordinator workbook saved to %s\n", excel_workbook_path))
   cat("====================================================\n\n")
 }
-
-

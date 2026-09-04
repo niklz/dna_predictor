@@ -1,22 +1,22 @@
 # =========================================================================
-# _MASTER_PREDICT.R: OPERATIONAL WEEKLY INFERENCE & ROSTER GENERATION 
+# _MASTER_PREDICT.R: OPERATIONAL WEEKLY INFERENCE & ROSTER GENERATION
 # =========================================================================
-# Orchestrates predictive scoring and workbook generation for both parent 
-# organizations (SHOU and UHBW) using calibrated Random Forest models 
+# Orchestrates predictive scoring and workbook generation for both parent
+# organizations (SHOU and UHBW) using calibrated Random Forest models.
 
-# 1. Setup and load configurations 
+# 1. Setup and load configurations
 # -------------------------------------------------------------------------
 source("00_libraries_and_utils.R")
 conf <- config::get()
 
-# Set seed for reproducible trial arm allocation 
-set.seed(42) 
+# Set seed for reproducible trial arm allocation
+set.seed(42)
 
-# 2. Load production artifacts 
+# 2. Load production artifacts (Pointed strictly to our lean 500k variant)
 # -------------------------------------------------------------------------
-model_bundle_path <- "data/processed/rf_final_model.rds"
+model_bundle_path <- "data/processed/models/rf_final_model_500k_lean.rds"
 if (!file.exists(model_bundle_path)) {
-  stop("Model bundle not found. Please train and calibrate the model first.")
+  stop("Model bundle not found. Please train and calibrate the 500k model first.")
 }
 
 model_bundle  <- readRDS(model_bundle_path)
@@ -25,51 +25,47 @@ rf_calibrator <- model_bundle$calibrator
 
 # Load calculated operational thresholds
 threshold_path <- "data/processed/risk_threshold.RDS"
+calculated_threshold <- 0.1446 # Power floor default fallback
+
 if (file.exists(threshold_path)) {
   threshold_data <- readRDS(threshold_path)
-  # Standard default threshold
-  calculated_threshold <- threshold_data$bounds$floor_threshold
-} else {
-  calculated_threshold <- 0.1446 # Power floor fallback if RDS is missing 
+  # Dynamic extraction of the bounds calculated during evaluation
+  if (!is.null(threshold_data$bounds$floor_threshold)) {
+    calculated_threshold <- threshold_data$bounds$floor_threshold
+  } else if (!is.null(threshold_data$production_threshold)) {
+    calculated_threshold <- threshold_data$production_threshold
+  }
 }
 
 # Operational override: Manually setting threshold to 10% (0.1) to boost sample sizes
-op_threshold <- 0.1 
-message(sprintf("Target ML threshold locked at >= %.2f (Override active: %.2f calculated)", op_threshold, calculated_threshold))
+op_threshold <- 0.1
+message(sprintf("Target ML threshold locked at >= %.2f (Override active: %.2f calculated)", 
+                op_threshold, calculated_threshold))
 
-# 3. Process SHOU Appointments [cite: 120]
+# 3. Process SHOU Appointments
 # -------------------------------------------------------------------------
 message("\n--- PROCESSING COHORT: SHOU ---")
 
-# -------------------------------------------------------------------------
-
-# -------------------------------------------------------------------------
 # 1. Clear Last Week's Roster (Guarantees a clean state)
-# -------------------------------------------------------------------------
 if (file.exists(conf$new_appointment_path)) {
   file.remove(conf$new_appointment_path)
   message("Successfully cleared last week's raw appointments file.")
 }
 
 # 2. Run the Fetch Script
-# -------------------------------------------------------------------------
 message("Fetching fresh weekly appointments...")
-# This script should fetch the data and write it to conf$new_appointment_path
-source("05_fetch_new_appointments.R") 
+source("05_fetch_new_appointments.R")
 
-# -------------------------------------------------------------------------
 # 3. Strict Verification (The loud, fail-safe crash)
-# -------------------------------------------------------------------------
 if (!file.exists(conf$new_appointment_path)) {
   stop(paste(
-    "\nCRITICAL ERROR: Fresh appointments file was not found at:", 
+    "\nCRITICAL ERROR: Fresh appointments file was not found at:",
     conf$new_appointment_path,
     "\nThe fetch script failed or encountered an error. Halting pipeline immediately!"
   ))
 }
 
 raw_shou_path <- conf$new_appointment_path
-
 if (!file.exists(raw_shou_path)) {
   # Fallback for dev/staging environments
   if (file.exists("data/data_joined.RDS")) {
@@ -84,7 +80,7 @@ if (!file.exists(raw_shou_path)) {
   new_appts_shou <- read.csv(raw_shou_path)
 }
 
-# Generate scored and randomized trial manifest 
+# Generate scored and randomized trial manifest
 final_manifest_shou <- generate_appointment_manifest(
   new_appointments = new_appts_shou,
   op_threshold     = op_threshold,
@@ -93,15 +89,14 @@ final_manifest_shou <- generate_appointment_manifest(
   conf             = conf
 )
 
-# Export formatted Excel workbook and scored CSV lists for SHOU 
+# Export formatted Excel workbook and scored CSV lists for SHOU
 generate_excel_manifest(
-  manifest     = final_manifest_shou, 
-  org_name     = "shou", 
+  manifest     = final_manifest_shou,
+  org_name     = "shou",
   op_threshold = op_threshold
 )
 
-
-# 4. Process UHBW Appointments 
+# 4. Process UHBW Appointments
 # -------------------------------------------------------------------------
 message("\n--- PROCESSING COHORT: UHBW ---")
 raw_uhbw_path <- "data/new_clinic_appointments_uhbw.xlsx"
@@ -114,7 +109,7 @@ if (!file.exists(raw_uhbw_path)) {
 new_appts_uhbw <- readxl::read_excel(raw_uhbw_path) %>% 
   rename_with(.fn = str_to_lower)
 
-# Generate scored and randomized trial manifest 
+# Generate scored and randomized trial manifest
 final_manifest_uhbw <- generate_appointment_manifest(
   new_appointments = new_appts_uhbw,
   op_threshold     = op_threshold,
@@ -123,12 +118,11 @@ final_manifest_uhbw <- generate_appointment_manifest(
   conf             = conf
 )
 
-# Export formatted Excel workbook and scored CSV lists for UHBW 
+# Export formatted Excel workbook and scored CSV lists for UHBW
 generate_excel_manifest(
-  manifest     = final_manifest_uhbw, 
-  org_name     = "uhbw", 
+  manifest     = final_manifest_uhbw,
+  org_name     = "uhbw",
   op_threshold = op_threshold
 )
 
 message("\nInference Pipeline Completed Successfully! Scored weekly outputs are ready for coordinator distribution.")
-

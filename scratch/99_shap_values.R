@@ -1,6 +1,5 @@
 library(fastshap)
 library(shapviz)
-library(tidymodels)
 library(doParallel)
 library(parallel)
 library(dplyr)
@@ -10,15 +9,30 @@ library(ggbeeswarm)
 library(ggnewscale)
 library(legendry)
 
+# -------------------------------------------------------------------------
+# 1. Setup & Configuration
+# -------------------------------------------------------------------------
+source("00_libraries_and_utils.R")
+conf <- config::get()
+
+model_bundle <- readRDS("data/processed/models/rf_final_model_500k_lean.rds") 
+model <- model_bundle$model
+train_raw <- readRDS("data/processed/archive/train_engineered.rds")
+
 # ==============================================================================
 # STEP 1: FAST SHAP COMPUTATION (ON BAKED DATA)
 # ==============================================================================
 
+
 raw_rf <- extract_fit_engine(model)
 rec    <- extract_recipe(model)
 
-# Pre-bake data ONCE
-train_baked <- bake(rec, new_data = train_raw) %>% select(-any_of(target_col))
+
+train_baked <- bake(rec, new_data = train_raw) %>% 
+  select(
+    -any_of(conf$target_col), 
+    -any_of(c("dim_patient_id", "patient_profile"))
+  )
 
 # ------------------------------------------------------------------------------
 # THE SHAP CAVEAT: BACKGROUND VS. EXPLANATION DATA
@@ -26,12 +40,13 @@ train_baked <- bake(rec, new_data = train_raw) %>% select(-any_of(target_col))
 # 1. Background Data: MUST be a simple random sample. 
 #    This sets the "base value" (average prediction). If you skew this, 
 #    you artificially change what the model considers "normal".
+
 set.seed(123)
-bg_X_baked <- train_baked[sample(nrow(train_baked), 300), ]
+bg_X_baked <- train_baked[sample(nrow(train_baked), 1000), ]
 
 # 2. Explanation Data: Use Inverse Frequency Weighting to oversample rare types.
 #    Pick the columns that define your sub-populations (e.g., ethnicity & urgency)
-stratify_cols <- c("ethnicity", "referral_urgency")
+stratify_cols <- c("ethnicity_group", "referral_urgency")
 
 # Calculate weights: 1 / (number of patients in that specific group)
 weighting_df <- train_raw %>%
@@ -52,41 +67,39 @@ explain_sample_baked <- train_baked[sample_indices, ]
 
 # Keep matching RAW data sample for plotting labels later
 explain_sample_raw   <- train_raw[sample_indices, ] %>% 
-  select(-any_of(target_col)) %>%
+  select(-any_of(conf$target_col)) %>%
   mutate(
     ethnicity_group = case_when(
-      ethnicity %in% c("unknown", "not stated", "not known", 
+      ethnicity_group %in% c("unknown", "not stated", "not known", 
                        "not collected at this time", "not set") ~ "Unknown",
-      grepl("^white", ethnicity, ignore.case = TRUE) ~ "White",
+      grepl("^white", ethnicity_group, ignore.case = TRUE) ~ "White",
       TRUE ~ "Global majority"
     )
   )
 
-# Prediction wrapper running directly on ranger engine
-pfun <- function(object, newdata) {
-  predict(object, data = newdata)$predictions[, 1]
+
+pfun <- function(object, newdata) { 
+  predict(object, data = newdata, num.threads = 24)$predictions[, 1] 
 }
 
-# Run fastshap in parallel
-n_cores <- max(1, parallel::detectCores() - 2)
-cl <- makeCluster(n_cores)
-invisible(clusterCall(cl, function(lp) .libPaths(lp), .libPaths()))
-registerDoParallel(cl)
+# 4. Sequential fastshap call (Bypasses Windows socket cloning)
 
-ex_global <- explain(
-  object = raw_rf,
-  X = bg_X_baked,
-  newdata = explain_sample_baked,
+ex_global <- fastshap::explain(
+  object       = raw_rf,
+  X            = bg_X_baked,
+  newdata      = explain_sample_baked,
   pred_wrapper = pfun,
-  nsim = 50,
-  adjust = TRUE,
-  parallel = TRUE,
-  .packages = "ranger"
+  nsim         = 50,         
+  adjust       = TRUE,
+  parallel     = FALSE,  # FALSE: Tells fastshap not to spawn messy background R sessions
+  .packages    = "ranger"
 )
 
-stopCluster(cl)
-registerDoSEQ()
+gc()
+message("-> [COMPLETE] SHAP values generated")
 
+
+shap_plot <- local({
 # ==============================================================================
 # STEP 1: PREPARE DATA & ASSIGN DOMAIN GROUPS
 # ==============================================================================
@@ -103,7 +116,7 @@ feature_df <- as.data.frame(lapply(colnames(shap_mat), function(col) {
 colnames(feature_df) <- colnames(shap_mat)
 
 # Lump high-cardinality categoricals
-high_card_cols <- c("clinic_code", "clinic_location", "site_code", "local_spec_code")
+high_card_cols <- c("clinic_code", "clinic_location", "registered_gp_practice", "national_spec_code", "site_code", "local_spec_code")
 
 feature_df <- feature_df %>%
   mutate(across(
@@ -118,26 +131,27 @@ continuous_vars <- c("distance_km", "age_at_appointment", "lead_time_days_log", 
 # ==============================================================================
 
 feature_lookup <- c(
-  "distance_km"        = "Distance (km)",
-  "age_at_appointment" = "Age at Appointment",
-  "lead_time_days_log" = "Lead Time (log days)",
-  "appt_hour_sin"      = "Appt Hour (Sin)",
-  "appt_hour_cos"      = "Appt Hour (Cos)",
-  "local_spec_code"    = "Local Specialty",
-  "national_spec_code" = "National Specialty",
-  "appointment_type"   = "Appointment Type",
-  "gender"             = "Gender",
-  "site_code"          = "Site Code",
-  "appt_dow"           = "Day of Week",
-  "referral_urgency"   = "Referral Urgency",
-  "clinic_code"        = "Clinic Code",
-  "clinic_location"    = "Clinic Location",
-  "imd"                = "IMD Decile",
-  "ethnicity_group"    = "Ethnicity Group",
-  "appt_month_num"     = "Appointment Month",
-  "lead_over_30"       = "Lead Time > 30 Days",
-  "is_morning"         = "Morning Appointment",
-  "has_dna_history"    = "Prior DNA History"
+  "distance_km"          = "Distance (km)",
+  "age_at_appointment"   = "Age at Appointment",
+  "lead_time_days_log"   = "Lead Time (log days)",
+  "appt_hour_sin"        = "Appt Hour (Sin)",
+  "appt_hour_cos"        = "Appt Hour (Cos)",
+  "local_spec_code"      = "Local Specialty",
+  "national_spec_code"   = "National Specialty",
+  "appointment_type"     = "Appointment Type",
+  "gender"               = "Gender",
+  "site_code"            = "Site Code",
+  "appt_dow"             = "Day of Week",
+  "referral_urgency"     = "Referral Urgency",
+  "clinic_code"          = "Clinic Code",
+  "clinic_location"      = "Clinic Location",
+  "imd"                  = "IMD Decile",
+  "ethnicity_group"      = "Ethnicity Group",
+  "appt_month_num"       = "Appointment Month",
+  "lead_over_30"         = "Lead Time > 30 Days",
+  "is_morning"           = "Morning Appointment",
+  "has_dna_history"      = "Prior DNA History",
+  "register_gp_practice" = "GP Practice"
 )
 
 month_lookup <- setNames(month.abb, sprintf("%02d", 1:12))
@@ -211,42 +225,99 @@ full_df <- full_df %>%
   )))
 
 # ==============================================================================
-# STEP 3: FACTOR ORDERING FOR LEGENDRY INTERACTION
+# STEP 3: FACTOR ORDERING WITH NATURAL CHRONOLOGICAL/NUMERICAL OVERRIDES
 # ==============================================================================
 
-parent_order <- full_df %>%
-  group_by(feature_clean) %>%
-  summarise(parent_shap = mean(abs(shap_value), na.rm = TRUE), .groups = "drop") %>%
-  arrange(parent_shap) %>%
+# 1. Determine importance of parent features (kept as-is) [cite: 746]
+parent_order <- full_df %>% 
+  group_by(feature_clean) %>% 
+  summarise(parent_shap = mean(abs(shap_value), na.rm = TRUE), .groups = "drop") %>% 
+  arrange(parent_shap) %>% 
   pull(feature_clean)
 
-level_order <- full_df %>%
+# 2. Extract values for features that should be sorted by SHAP importance [cite: 747]
+# (We exclude natural/ordinal features from this step)
+natural_feature_names <- c("Day of Week", "IMD Decile", "Appointment Month", "Age Group", "Age at Appointment")
+
+shap_sorted_values <- full_df %>%
+  filter(!feature_clean %in% natural_feature_names) %>%
   group_by(feature_value_clean) %>%
   summarise(level_shap = mean(abs(shap_value), na.rm = TRUE), .groups = "drop") %>%
   arrange(level_shap) %>%
   pull(feature_value_clean)
 
-# Setting factor levels ensures interaction(inner, outer) follows SHAP importance
-full_df <- full_df %>%
+# Strip "Other" from the SHAP sorted list so we can force it last later [cite: 747]
+shap_sorted_values <- shap_sorted_values[shap_sorted_values != "Other"]
+
+# 3. Define strict natural chronological & numerical orders [cite: 747]
+natural_levels <- c()
+
+# A. Day of Week chronological order
+if ("Day of Week" %in% full_df$feature_clean) {
+  dow_levels <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+  dow_present <- dow_levels[dow_levels %in% full_df$feature_value_clean]
+  natural_levels <- c(natural_levels, dow_present)
+}
+
+# B. IMD Decile numerical order (Decile 1 to 10, then Unknown)
+if ("IMD Decile" %in% full_df$feature_clean) {
+  imd_levels <- c(paste0("Decile ", 1:10), "Unknown", "unknown")
+  imd_present <- imd_levels[imd_levels %in% full_df$feature_value_clean]
+  natural_levels <- c(natural_levels, imd_present)
+}
+
+# C. Appointment Month chronological order
+if ("Appointment Month" %in% full_df$feature_clean) {
+  month_levels <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+  month_present <- month_levels[month_levels %in% full_df$feature_value_clean]
+  natural_levels <- c(natural_levels, month_present)
+}
+
+# D. Age bands (Interval strings like "18-24", "25-34" sort perfectly alphabetically!)
+age_groups <- full_df %>%
+  filter(feature_clean %in% c("Age Group", "Age at Appointment") & !is_continuous) %>%
+  pull(feature_value_clean) %>%
+  unique()
+
+if (length(age_groups) > 0) {
+  age_present <- sort(age_groups) # Alphabetical sort maps "18-24" < "25-34"
+  natural_levels <- c(natural_levels, age_present)
+}
+
+# E. Safeguard: Find any unrepresented values in natural groups to prevent silent NA coercion [cite: 747]
+captured_natural_values <- c(natural_levels, shap_sorted_values)
+all_present_values      <- unique(full_df$feature_value_clean)
+unrepresented_values    <- setdiff(all_present_values, captured_natural_values)
+
+# 4. Combine everything into our final unified levels vector
+final_level_order <- c(shap_sorted_values, natural_levels, unrepresented_values)
+
+# 5. Apply the factor levels safely to the dataset [cite: 747]
+full_df <- full_df %>% 
   mutate(
     feature_clean       = factor(feature_clean, levels = parent_order),
-    feature_value_clean = factor(feature_value_clean, levels = level_order)
+    feature_value_clean = factor(feature_value_clean, levels = final_level_order)
+  ) %>% 
+  mutate(
+    # Move "Other" safely to the end of the factor levels (bottom of y-axis) [cite: 747]
+    feature_value_clean = forcats::fct_relevel(feature_value_clean, "Other", after = Inf)
   )
 
+# Split datasets for continuous vs categorical geom mapping (kept as-is) [cite: 747]
 df_cont <- full_df %>% filter(is_continuous)
 df_cat  <- full_df %>% filter(!is_continuous)
 
-# Categorical palette
+# ==============================================================================
+# STEP 4: FACETED ggplot WITH LEGENDRY INTERACTION AXIS
+# ==============================================================================
+
+# ==============================================================================
+# STEP 4: FACETED ggplot WITH LEGENDRY INTERACTION AXIS
+# ==============================================================================
+
+browser()
 n_cat_features <- length(unique(df_cat$feature_clean))
-cat_palette    <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_cat_features)
-
-# ==============================================================================
-# STEP 4: FACETED ggplot WITH LEGENDRY INTERACTION AXIS
-# ==============================================================================
-
-# ==============================================================================
-# STEP 4: FACETED ggplot WITH LEGENDRY INTERACTION AXIS
-# ==============================================================================
+cat_palette    <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))
 
 p <- ggplot(
   data = full_df,
@@ -297,4 +368,6 @@ p <- ggplot(
     strip.text.y = element_text(size = 10, face = "bold", angle = 270)
   )
 
-print(p)
+p
+});print(shap_plot)
+

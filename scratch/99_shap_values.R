@@ -32,7 +32,8 @@ train_baked <- bake(rec, new_data = train_raw) %>%
   select(
     -any_of(conf$target_col), 
     -any_of(c("dim_patient_id", "patient_profile"))
-  )
+  ) %>%
+  mutate(imd = fct_relevel(imd, "10", after = 9L))
 
 # ------------------------------------------------------------------------------
 # THE SHAP CAVEAT: BACKGROUND VS. EXPLANATION DATA
@@ -105,7 +106,7 @@ shap_plot <- local({
   # ==============================================================================
   feature_lookup <- c(
     "distance_km"            = "Distance (km)",
-    "age_at_appointment"     = "Age at Appointment",
+    # "age_at_appointment"     = "Age at Appointment",
     "age_group"              = "Age Group",
     "lead_time_days_log"     = "Lead Time (log days)",
     "appt_hour_sin"          = "Appt Hour (Sin)",
@@ -138,7 +139,7 @@ shap_plot <- local({
   # Explicit list of continuous variables to handle separately [cite: 637]
   continuous_vars <- c("distance_km", "age_at_appointment", "lead_time_days_log", "appt_hour_sin", "appt_hour_cos")
   
-  # FIXED: Added registered_gp_practice and national_spec_code to back-transformation [cite: 637]
+  # Added registered_gp_practice and national_spec_code to back-transformation [cite: 637]
   vars_to_back_transform <- c(
     "clinic_location", "site_code", "local_spec_code", "appointment_type", 
     "registered_gp_practice", "national_spec_code"
@@ -153,7 +154,7 @@ shap_plot <- local({
   })) 
   colnames(feature_df) <- colnames(shap_mat)
   
-  # FIXED: Added registered_gp_practice and national_spec_code to lumping logic [cite: 638]
+  # Added registered_gp_practice and national_spec_code to lumping logic [cite: 638]
   high_card_cols <- c(
     "clinic_code", "clinic_location", "site_code", "local_spec_code", 
     "registered_gp_practice", "national_spec_code"
@@ -178,16 +179,19 @@ shap_plot <- local({
   full_df <- left_join(shap_long, feature_long, by = c("row_id", "feature")) %>% 
     mutate(
       feature_clean = recode(feature, !!!feature_lookup, .default = feature),
-      is_continuous = feature %in% continuous_vars,
-      
-      # Scale continuous features for gradient colors [cite: 640]
+      is_continuous = feature %in% continuous_vars
+    ) %>%
+    # FIX 1: Group by feature so continuous variables are scaled INDIVIDUALLY [cite: 692]
+    group_by(feature) %>%
+    mutate(
       num_scaled = if_else(
         is_continuous,
         (suppressWarnings(as.numeric(feature_value)) - min(suppressWarnings(as.numeric(feature_value)), na.rm = TRUE)) / 
           (max(suppressWarnings(as.numeric(feature_value)), na.rm = TRUE) - min(suppressWarnings(as.numeric(feature_value)), na.rm = TRUE)),
         NA_real_
       )
-    )
+    ) %>%
+    ungroup() # Cleanly ungroup to preserve parent rows [cite: 692]
   
   # Clean up categorical values [cite: 641]
   full_df <- full_df %>% 
@@ -195,6 +199,9 @@ shap_plot <- local({
       feature_value_clean = case_when(
         # Collapse continuous variables to prevent discrete coordinate breaks [cite: 641]
         is_continuous ~ " ",
+        
+        # FIX 2: Standardise "other" to "Other" FIRST to catch it before any specialized formats run! [cite: 641]
+        tolower(feature_value) == "other" ~ "Other",
         
         # Binary flags [cite: 641]
         feature %in% c("is_morning", "has_dna_history", "lead_over_30") & feature_value %in% c("1", "1.0", "TRUE") ~ "Yes",
@@ -207,18 +214,15 @@ shap_plot <- local({
         # Deprivation Deciles [cite: 641]
         feature == "imd" ~ paste0("Decile ", feature_value),
         
-        # TWEAK 1: Standardise "other"/"Other" categories across all features [cite: 641]
-        tolower(feature_value) %in% c("other", "Decile other") ~ "Other",
-        
         TRUE ~ as.character(feature_value)
       )
     )
   
-  # FIXED: mapped has_dna_history to "Clinical & service context" (by omitting it from demographics) [cite: 642]
+  # Mapped has_dna_history to "Clinical & service context" (by omitting it from demographics) [cite: 642]
   full_df <- full_df %>% 
     mutate(
       feature_group = case_when(
-        feature %in% c("has_dna_history", "age_group", "age_at_appointment", "gender", "ethnicity_group", "imd", "distance_km") ~ "Demographics & background",
+        feature %in% c("age_group", "age_at_appointment", "gender", "ethnicity_group", "imd", "distance_km") ~ "Demographics & background",
         feature %in% c("appt_dow", "appt_month_num", "lead_time_days_log", "lead_over_30", "is_morning", "appt_hour_sin", "appt_hour_cos") ~ "Scheduling & timing",
         TRUE ~ "Clinical & service context"
       )
@@ -245,8 +249,8 @@ shap_plot <- local({
   
   # Automatically extract pre-existing factor levels from source datasets [cite: 644]
   factor_cols <- c() 
-  if (exists("train_baked")) factor_cols <- unique(c(factor_cols, colnames(train_baked)[sapply(train_baked, is.factor)])) 
-  if (exists("train_raw"))   factor_cols <- unique(c(factor_cols, colnames(train_raw)[sapply(train_raw, is.factor)]))
+  if (exists("train_baked")) factor_cols = unique(c(factor_cols, colnames(train_baked)[sapply(train_baked, is.factor)])) 
+  if (exists("train_raw"))   factor_cols = unique(c(factor_cols, colnames(train_raw)[sapply(train_raw, is.factor)]))
   
   natural_features_levels <- list() 
   for (col in factor_cols) { 
@@ -269,8 +273,8 @@ shap_plot <- local({
           col == "appt_month_num" ~ paste0("Month ", val),
           col == "imd" ~ paste0("Decile ", val),
           
-          # TWEAK 2: Standardise natural factor levels (forces "other" -> "Other") [cite: 644]
-          tolower(val) %in% c("other", "Decile other") ~ "Other",
+          # Standardise natural factor levels (forces "other" -> "Other") [cite: 644]
+          tolower(val) == "other" ~ "Other",
           
           TRUE ~ as.character(val)
         )
@@ -288,7 +292,7 @@ shap_plot <- local({
     arrange(level_shap) %>% 
     pull(feature_value_clean)
   
-  shap_sorted_values <- shap_sorted_values[!shap_sorted_values %in% c("Other", "other")]
+  shap_sorted_values <- shap_sorted_values[!shap_sorted_values %in% c("Other", "other")] 
   
   unlisted_natural_levels <- unlist(natural_features_levels, use.names = FALSE) 
   all_present_values      <- unique(full_df$feature_value_clean) 
@@ -314,7 +318,7 @@ shap_plot <- local({
   # ==============================================================================
   # STEP 4: FACETED GGPLOT WITH LEGENDRY INTERACTION AXIS 
   # ==============================================================================
-  n_cat_features <- length(unique(df_cat$feature_clean))
+  n_cat_features <- length(unique(df_cat$feature_clean)) 
   cat_palette    <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_cat_features) 
   
   p <- ggplot( 

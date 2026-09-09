@@ -6,7 +6,7 @@ library(flextable)
 
 
 model_bundle_path <- "data/processed/models/rf_final_model_500k_full.rds"
-model_data_path <- "data/processed/train_engineered.rds"
+model_data_path <- "data/processed/train_engineered_500k_full.rds"
 model_bundle  <- readRDS(model_bundle_path)
 model_data <- readRDS(model_data_path)
 

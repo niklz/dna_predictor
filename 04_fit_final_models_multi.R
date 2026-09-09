@@ -63,6 +63,9 @@ for (n in cohort_sizes) {
       ungroup()
   }
   
+  subset_path <- sprintf("data/processed/train_engineered_%s_full.rds", size_label)
+  saveRDS(train_subset, subset_path)
+  
   # B. Reconstruct Workflow Blueprints
   data_template <- head(train_subset, 0)
   tuning_recipe <- build_trial_recipe(

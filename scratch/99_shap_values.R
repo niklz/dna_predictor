@@ -17,7 +17,7 @@ conf <- config::get()
 
 model_bundle <- readRDS("data/processed/models/rf_final_model_500k_lean.rds") 
 model <- model_bundle$model
-train_raw <- readRDS("data/processed/archive/train_engineered.rds")
+train_raw <- readRDS("data/processed/train_engineered.rds")
 
 # ==============================================================================
 # STEP 1: FAST SHAP COMPUTATION (ON BAKED DATA)
@@ -80,7 +80,7 @@ explain_sample_raw   <- train_raw[sample_indices, ] %>%
 
 
 pfun <- function(object, newdata) { 
-  predict(object, data = newdata, num.threads = 24)$predictions[, 1] 
+  predict(object, data = newdata, num.threads = parallel::detectCores()-2)$predictions[, 1] 
 }
 
 # 4. Sequential fastshap call (Bypasses Windows socket cloning)
@@ -378,4 +378,14 @@ shap_plot <- local({
 
   p
 });print(shap_plot)
+
+ggsave(
+  filename = "materials/shap_plot.png",
+  plot = shap_plot,
+  width = 15,
+  height = 10,
+  scale = 0.9,
+  bg = "white"
+)
+
 

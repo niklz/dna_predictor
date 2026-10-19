@@ -9,9 +9,9 @@ log_file_path   <- file.path(network_log_dir, "live_training_progress.log")
 # Create the file connection
 log_connection <- file(log_file_path, open = "wt")
 
-# Sink console output and messages to the network log file [cite: 7]
-sink(log_connection, split = TRUE)          # split = TRUE keeps output visible in RStudio!
-sink(log_connection, type = "message")       # Redirects messages and warnings safely
+# Sink console output and messages to the network log file
+sink(log_connection, split = TRUE)
+sink(log_connection, type = "message")
 
 
 conf <- config::get()

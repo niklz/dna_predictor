@@ -1,10 +1,6 @@
 # =========================================================================
-# UPDATED CLINICAL TRIAL PIPELINE FUNCTIONS (v8-v3 / v6)
+# Librariers and helper functions
 # =========================================================================
-# Contains the production-grade R functions for weekly inference scoring,
-# stratified trial arm block-randomisation, and beautiful openxlsx generation.
-# Consolidates all central libraries and polymorphic date-parsing utilities
-# to resolve Excel numeric double import conflicts and CSV string mismatches.
 
 library(dplyr)
 library(tidyr)
@@ -31,7 +27,7 @@ library(progressr)
 library(readxl)
 
 # -------------------------------------------------------------------------
-# CUSTOM HELPER FUNCTIONS & POLYSYNTACTIC DATETIME PARSERS
+# CUSTOM HELPER FUNCTIONS & DATETIME PARSERS
 # -------------------------------------------------------------------------
 
 collect_ethnicity <- function(x) {
@@ -211,7 +207,7 @@ standardise_phone_number <- function(phone_col) {
 }
 
 # -------------------------------------------------------------------------
-# CENTRALIZED FEATURE ENGINEERING & RECIPE BUILDING (Prevents Train-Serve Skew)
+# CENTRALISED FEATURE ENGINEERING & RECIPE BUILDING 
 # -------------------------------------------------------------------------
 
 apply_custom_feature_engineering <- function(data) {
@@ -545,7 +541,7 @@ generate_appointment_manifest <- function(new_appointments, op_threshold, rf_mod
 
 generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir = "outputs") {
   
-  # A. Dynamically construct file paths using organization name and runtime stamp
+  # A. Dynamically construct file paths using organisation name and runtime stamp
   current_date <- format(Sys.Date(), "%Y-%m-%d")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   
@@ -635,7 +631,7 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   }
   
   # .........................................................................
-  # SHEET 2: WEEKLY OUTREACH ROSTER (35 columns total)
+  # SHEET 2: WEEKLY OUTREACH ROSTER 
   # .........................................................................
   sheet_name_rost <- "Weekly outreach roster"
   addWorksheet(wb, sheet_name_rost)
@@ -700,17 +696,17 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   
   writeData(wb, sheet_name_rost, export_roster_data, startCol = 1, startRow = 9, colNames = FALSE)
   
-  # Vectorized Group Row Indices Calculations
+  # Vectorized group row indices calculations
   intervention_rows <- which(manifest$trial_arm == "intervention") + start_row - 1
   control_rows      <- which(manifest$trial_arm == "control") + start_row - 1
   not_in_trial_rows <- which(manifest$trial_arm == "not in trial") + start_row - 1
   
-  # Base formatting style covering pre-populated metadata (Stopping at Column 24)
+  # Base formatting style covering pre-populated metadata 
   addStyle(wb, sheet_name_rost, style_text_left, rows = start_row:end_row, cols = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 17, 19, 20, 21, 22, 23, 24), gridExpand = TRUE)
   addStyle(wb, sheet_name_rost, style_num_right, rows = start_row:end_row, cols = c(12, 15), gridExpand = TRUE) # age, imd
   addStyle(wb, sheet_name_rost, style_prob_pct, rows = start_row:end_row, cols = 18, gridExpand = TRUE) # dna_risk
   
-  # Group-Based Vectorized Conditional Formatting
+  # Group-Based vectorised conditional formatting
   if (length(intervention_rows) > 0) {
     # Blue background fields for manual logging columns
     addStyle(wb, sheet_name_rost, style_active_input, rows = intervention_rows, cols = c(26, 28, 29, 31, 32, 33, 34, 35), gridExpand = TRUE)
@@ -731,7 +727,7 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
     addStyle(wb, sheet_name_rost, style_control_row, rows = not_in_trial_rows, cols = 25:35, gridExpand = TRUE)
   }
   
-  # Pre-defined Dropdowns and Input Validations
+  # Pre-defined dropdowns and input validation
   dataValidation(wb, sheet_name_rost, col = 26, rows = start_row:end_row, type = "list", value = '"yes,no"')
   dataValidation(wb, sheet_name_rost, col = 28, rows = start_row:end_row, type = "list", value = '"confirm,cancel,reschedule,no_response"')
   dataValidation(wb, sheet_name_rost, col = 29, rows = start_row:end_row, type = "list", value = '"yes,no"')
@@ -740,7 +736,7 @@ generate_excel_manifest <- function(manifest, org_name, op_threshold, output_dir
   dataValidation(wb, sheet_name_rost, col = 33, rows = start_row:end_row, type = "list", value = '"confirm,cancel,reschedule,no_response"')
   dataValidation(wb, sheet_name_rost, col = 35, rows = start_row:end_row, type = "list", value = '"Attended,DNA,Cancelled,Rescheduled"')
   
-  # Strict Decimal Datetime validation to block time-only "3pm" shortcuts
+  # Strict decimal datetime validation 
   # (Setting the decimal bounds to > 45000 fully blocks hours-only entries like "0.625" / "3pm")
   dataValidation(wb, sheet_name_rost, col = 25, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")
   dataValidation(wb, sheet_name_rost, col = 27, rows = start_row:end_row, type = "decimal", operator = "greaterThan", value = "45000")

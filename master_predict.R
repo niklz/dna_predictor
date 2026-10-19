@@ -1,8 +1,6 @@
 # =========================================================================
-# _MASTER_PREDICT.R: OPERATIONAL WEEKLY INFERENCE & ROSTER GENERATION
-# =========================================================================
-# Orchestrates predictive scoring and workbook generation for both parent
-# organizations (SHOU and UHBW) using calibrated Random Forest models.
+# Orchestrates predictive scoring and workbook generation for both
+# organisations (SHOU and UHBW)
 
 # 1. Setup and load configurations
 # -------------------------------------------------------------------------
@@ -12,7 +10,7 @@ conf <- config::get()
 # Set seed for reproducible trial arm allocation
 set.seed(42)
 
-# 2. Load production artifacts (Pointed strictly to our lean 500k variant)
+# 2. Load production artifacts 
 # -------------------------------------------------------------------------
 model_bundle_path <- "data/processed/models/rf_final_model_500k_lean.rds"
 if (!file.exists(model_bundle_path)) {
@@ -37,7 +35,7 @@ if (file.exists(threshold_path)) {
   }
 }
 
-# Operational override: Manually setting threshold to 10% (0.1) to boost sample sizes
+# Manually setting threshold to 10% (0.1) to boost sample sizes
 op_threshold <- 0.1
 message(sprintf("Target ML threshold locked at >= %.2f (Override active: %.2f calculated)", 
                 op_threshold, calculated_threshold))
@@ -46,22 +44,22 @@ message(sprintf("Target ML threshold locked at >= %.2f (Override active: %.2f ca
 # -------------------------------------------------------------------------
 message("\n--- PROCESSING COHORT: SHOU ---")
 
-# 1. Clear Last Week's Roster (Guarantees a clean state)
+# 1. Clear last week's roster 
 if (file.exists(conf$new_appointment_path)) {
   file.remove(conf$new_appointment_path)
   message("Successfully cleared last week's raw appointments file.")
 }
 
-# 2. Run the Fetch Script
+# 2. Run the fetch script
 message("Fetching fresh weekly appointments...")
 source("05_fetch_new_appointments.R")
 
-# 3. Strict Verification (The loud, fail-safe crash)
+# 3. Strict verification 
 if (!file.exists(conf$new_appointment_path)) {
   stop(paste(
     "\nCRITICAL ERROR: Fresh appointments file was not found at:",
     conf$new_appointment_path,
-    "\nThe fetch script failed or encountered an error. Halting pipeline immediately!"
+    "\nThe fetch script failed or encountered an error. Halting pipeline."
   ))
 }
 
@@ -80,7 +78,7 @@ if (!file.exists(raw_shou_path)) {
   new_appts_shou <- read.csv(raw_shou_path)
 }
 
-# Generate scored and randomized trial manifest
+# Generate scored and randomised trial manifest
 final_manifest_shou <- generate_appointment_manifest(
   new_appointments = new_appts_shou,
   op_threshold     = op_threshold,

@@ -1,8 +1,8 @@
 # =========================================================================
 # SCRIPT 04: FIT & CALIBRATE FINAL MODELS (MULTI-VARIANT DESKTOP VERSION)
 # =========================================================================
-# Sourced for desktop execution to leverage Core i9-9980XE (36 logical threads).
-# Fits, calibrates, and outputs dual-package RDS bundles (Full and Lean)
+# Sourced for desktop execution to leverage desktop (36 logical threads).
+# Fits, calibrates, and outputs dual-package RDS bundles (full and lean)
 # across multiple training cohort sizes: 100k, 250k, 500k, and Full (944k).
 
 source("00_libraries_and_utils.R")
@@ -25,7 +25,7 @@ message(sprintf("Using optimal tuned parameters: mtry = %d, trees = %d, min_n = 
                 best_params$mtry, best_params$trees, best_params$min_n))
 
 # -------------------------------------------------------------------------
-# Dynamic Scoping Environment Stripper (To prevent lexical closures)
+# Dynamic scoping environment stripper (To prevent lexical closures)
 # -------------------------------------------------------------------------
 strip_lexical_envs <- function(x) {
   if (is.list(x) && !is.object(x)) {
@@ -52,7 +52,7 @@ for (n in cohort_sizes) {
   message(sprintf("   TRAINING COHORT VARIANT: %s rows (%s)", format(n, big.mark=","), size_label))
   message(sprintf("===================================================="))
   
-  # A. Stratified sub-sampling to preserve class balance (DNA rate)
+  # Stratified sub-sampling to preserve class balance (DNA rate)
   set.seed(123)
   train_subset <- if (n == total_rows) {
     train_full
@@ -66,7 +66,7 @@ for (n in cohort_sizes) {
   subset_path <- sprintf("data/processed/train_engineered_%s_full.rds", size_label)
   saveRDS(train_subset, subset_path)
   
-  # B. Reconstruct Workflow Blueprints
+  # Reconstruct workflow 
   data_template <- head(train_subset, 0)
   tuning_recipe <- build_trial_recipe(
     data_template = data_template, 
@@ -91,7 +91,7 @@ for (n in cohort_sizes) {
     add_model(rf_cv_spec) %>%
     finalize_workflow(best_params)
   
-  # C. Generate 10-Fold CV Resamples
+  # Generate 10-Fold CV Resamples
   # Note: Stratification is omitted in group cross-validation because 
   # dna_outcome is not constant within each patient ID (dim_patient_id) group.
   set.seed(123)
@@ -101,11 +101,11 @@ for (n in cohort_sizes) {
     group = "dim_patient_id"
   )
   
-  # D. Parallel Evaluation of Folds
+  # Parallel Evaluation of Folds
   message("Running parallel out-of-fold evaluations for calibration...")
   library(doFuture)
   registerDoFuture()
-  # Desktop optimization: 10 parallel workers to match your 10 folds!
+  # Desktop optimisation: 10 parallel workers to match 10 folds
   plan(multisession, workers = 10, maxSizeOfObjects = 3000 * 1024^2)
   
   cv_results <- fit_resamples(
@@ -118,10 +118,9 @@ for (n in cohort_sizes) {
     )
   )
   
-  # Close parallel session to release workers
   plan(sequential)
   
-  # E. Collect Unbiased Predictions and Build Calibrator
+  # Collect unbiased predictions and build calibrator
   preds <- collect_predictions(cv_results)
   cal_model <- cal_estimate_logistic(
     preds,
@@ -130,7 +129,7 @@ for (n in cohort_sizes) {
     event_level = "first"
   )
   
-  # F. Fit Final Production Model (Multi-threading enabled)
+  # Fit final production model (Multi-threading enabled)
   message("Fitting final model on complete subset...")
   final_spec <- rand_forest(
     mtry  = tune(),
@@ -147,7 +146,7 @@ for (n in cohort_sizes) {
   
   fit <- final_wf %>% fit(data = train_subset)
   
-  # G. Construct and Save Bundles
+  # Construct and Save Bundles
   message("Constructing bundles...")
   
   # --- PACKAGE 1: THE FULL EVALUATION BUNDLE ---
@@ -177,7 +176,7 @@ for (n in cohort_sizes) {
     model_ver   = sprintf("%s_%s_lean", conf$model_ver, size_label)
   )
   
-  # Save with zero compression for instant loadRDS() times on laptop serving pipelines
+  # Save
   lean_path <- sprintf("data/processed/models/rf_final_model_%s_lean.rds", size_label)
   saveRDS(lean_bundle, lean_path, compress = FALSE)
   

@@ -19,7 +19,7 @@ model <- local({
   model_tune_results <- readRDS("data/processed/rf_tune.rds")
   params <- model_tune_results$best_params
   # -------------------------------------------------------------------------
-  # 1. Reconstruct Untuned Workflow Blueprint [cite: 2]
+  # 1. Reconstruct untuned workflow
   # -------------------------------------------------------------------------
   data_template <- head(train_data, 0)
   
@@ -36,8 +36,8 @@ model <- local({
   ) %>%
     set_engine(
       "ranger",
-      num.threads = 1,     # CRITICAL: Keeps background workers locked to 1 thread! [cite: 666]
-      importance  = "none" # Keeps resample fitting incredibly lean [cite: 631]
+      num.threads = 1,
+      importance  = "none" # Keeps resample fitting lean
     ) %>%
     set_mode("classification")
   
@@ -46,32 +46,30 @@ model <- local({
     add_model(rf_spec)
   
   # -------------------------------------------------------------------------
-  # 2. Extract Unbiased Out-Of-Fold Predictions for Calibrator
+  # 2. Extract unbiased out-of-fold predictions for calibrator
   # -------------------------------------------------------------------------
   message("Generating out-of-fold predictions for calibration...")
   
-  # Recreate the folds for the best-model cross-validation run [cite: 3]
+  # Recreate the folds for the best-model cross-validation run
   set.seed(123)
   dna_folds <- rsample::group_vfold_cv(train_data, v = conf$cv_folds, group = "dim_patient_id")
   
-  # Finalise blueprint with your winning parameters [cite: 406]
+  # Finalise blueprint with winning parameters 
   best_wf <- wf %>% finalize_workflow(params)
   
-  # LAPTOP-SAFE SEQUENTIAL RUN [cite: 4]
-  # Windows multisession socket serialization of 1.5GB data is too heavy for a laptop.
-  # Running sequentially avoids copying data, saves RAM, and completes in ~2 minutes! [cite: 4]
+  # LAPTOP-SAFE SEQUENTIAL RUN
   library(doFuture)
   registerDoFuture()
-  plan(sequential) # 100% stable, zero socket copies, no OOM crashes! [cite: 4]
+  plan(sequential)
   
-  # Run the CV fit to harvest calibration predictions [cite: 413]
+  # Run the CV fit to harvest calibration predictions
   cv_results <- fit_resamples(
     best_wf,
     resamples = dna_folds,
     metrics   = metric_set(pr_auc, roc_auc),
     control   = control_resamples(
-      save_pred     = TRUE,       # Save predictions strictly for the winner [cite: 413]
-      parallel_over = "resamples" # Safe sequential resample loop [cite: 4]
+      save_pred     = TRUE,
+      parallel_over = "resamples"
     )
   )
   
@@ -86,11 +84,11 @@ model <- local({
   )
   
   # -------------------------------------------------------------------------
-  # 3. Fit Final Production Model (Multi-threading Override)
+  # 3. Fit final production model
   # -------------------------------------------------------------------------
   message("Fitting final model on full cohort...")
   
-  # Update parsnip engine to use maximum threads for the final fit 
+  # Update parsnip engine to use maximum threads for the final fit
   updated_spec <- rand_forest(
     mtry  = params$mtry,
     trees = params$trees,
@@ -99,15 +97,14 @@ model <- local({
     set_engine(
       "ranger",
       num.threads = parallel::detectCores() - 1, # Max threads for final fit
-      importance  = "permutation"                # Safe to calculate now!
+      importance  = "permutation"                # Importance only computed for final fit
     ) %>%
     set_mode("classification")
   
   final_wf <- workflow() %>%
     add_recipe(tuning_recipe) %>%
     add_model(updated_spec)
-  
-  # Fit model on the full 1-million-row cohort sequentially [cite: 414]
+    
   fit <- final_wf %>%
     fit(data = train_data)
   

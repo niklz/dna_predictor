@@ -275,7 +275,7 @@ simulate_clinical_trial_advanced <- function(
 }
 
 # =========================================================================
-# 2. PROCESS MINING & EXPLORATION VISUALIZATIONS
+# 2. PROCESS MINING & EXPLORATION VISUALISATIONS
 # =========================================================================
 
 plot_trial_journeys <- function(trial_data, num_samples_per_group = 3) {
